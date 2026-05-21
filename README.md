@@ -2,18 +2,28 @@
 
 [English](README.md) | [Tiếng Việt](README.vi.md)
 
+Upstream AgentMemory repo: https://github.com/rohitg00/agentmemory
+
 Automation setup for AgentMemory across Antigravity, Codex CLI, and Claude Code.
 
-By default, it configures local embeddings using `all-MiniLM-L6-v2` via AgentMemory's local provider:
+Setup keeps `~/.agentmemory/.env` as the source of truth, uses the local embedding model, and enables AgentMemory automation through the logged-in Antigravity CLI proxy. API keys are optional.
 
 ```env
 EMBEDDING_PROVIDER=local
 BM25_WEIGHT=0.4
 VECTOR_WEIGHT=0.6
 AGENTMEMORY_URL=http://localhost:3111
+AGENTMEMORY_AUTO_COMPRESS=true
+CONSOLIDATION_ENABLED=true
+GRAPH_EXTRACTION_ENABLED=true
+AGENTMEMORY_DROP_STALE_INDEX=false
+OPENAI_BASE_URL=http://127.0.0.1:3129
+OPENAI_MODEL=agy-cli
 ```
 
 ## Quick Install
+
+Default setup uses the logged-in Antigravity CLI through a local proxy, no API key required:
 
 ```bash
 bash setup.sh
@@ -23,8 +33,6 @@ To set up a single client only:
 
 ```bash
 bash setup.sh --client antigravity
-bash setup.sh --client codex
-bash setup.sh --client claude-code
 ```
 
 To skip the upstream sync for faster execution:
@@ -32,6 +40,17 @@ To skip the upstream sync for faster execution:
 ```bash
 bash setup.sh --skip-upstream
 ```
+
+## Agy Local Proxy
+
+`setup.sh` does not patch upstream AgentMemory. It starts a local OpenAI-compatible proxy at `http://127.0.0.1:3129`, then configures AgentMemory's existing `openai` provider to call that proxy. The proxy forwards requests to `agy --print-timeout 120s -p "<prompt>"`.
+
+Requirements and limits:
+
+- Requires a logged-in `agy` CLI, defaulting to `~/.local/bin/agy`.
+- Each LLM call spawns CLI work, so it is slower than direct API calls.
+- Embeddings remain local.
+- Hooks and LLM-backed automation are enabled by default.
 
 ## Upstream Snapshot
 
@@ -69,6 +88,14 @@ Health:
 curl -fsSL http://localhost:3111/agentmemory/health
 ```
 
+Before `setup.sh` restarts AgentMemory, it backs up runtime state into:
+
+```text
+~/.agentmemory/backups/setup-<timestamp>/
+```
+
+The backup includes the local `data/` directory when present, `~/.agentmemory/standalone.json`, and the current env file.
+
 ## Antigravity
 
 Since Antigravity does not have an upstream AgentMemory plugin yet, this repository sets it up manually:
@@ -81,42 +108,26 @@ The setup uses a sentinel block to avoid overwriting existing content in `GEMINI
 
 ## Codex CLI
 
-Codex CLI has an upstream AgentMemory plugin. The setup prioritizes:
-
-```bash
-codex plugin marketplace add rohitg00/agentmemory
-codex plugin install agentmemory
-```
-
-If the plugin installation is unavailable, the setup falls back to an MCP-only configuration in:
+Setup writes the MCP fallback configuration in:
 
 ```text
 ~/.codex/config.toml
 ```
 
-Note: The fallback configuration does not automatically create custom hooks.
+Setup also attempts to install the upstream AgentMemory plugin and run `agentmemory connect codex --with-hooks --force`.
 
 ## Claude Code
 
-Claude Code has the most comprehensive upstream plugin for AgentMemory. The setup will attempt:
-
-```bash
-agentmemory connect claude-code
-```
-
-If this cannot be run non-interactively, you can set it up manually in Claude Code:
-
-```text
-/plugin marketplace add rohitg00/agentmemory
-/plugin install agentmemory
-```
+Setup attempts to install the upstream Claude Code plugin and connect AgentMemory hooks when `claude` and `agentmemory` CLIs are available.
 
 ## CLI
 
 After building:
 
 ```bash
-node dist/cli.js setup --client all
+node dist/cli.js setup --profile local --client all
+node dist/cli.js setup --profile agy-local --agy-bin ~/.local/bin/agy
+node dist/cli.js agy-proxy --host 127.0.0.1 --port 3129
 node dist/cli.js verify
 node dist/cli.js status
 ```
@@ -145,6 +156,4 @@ Running `setup.sh` again will update this block and copy active skills to `~/.ge
 ## What We Do Not Do
 
 - Do not fork the AgentMemory upstream repository.
-- Do not replace Codex/Claude upstream hooks with custom hooks.
 - Do not require an API key for embeddings.
-- Do not enable LLM compression/consolidation by default.

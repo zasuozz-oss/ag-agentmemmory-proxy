@@ -2,18 +2,28 @@
 
 [English](README.md) | [Tiếng Việt](README.vi.md)
 
+Repo gốc AgentMemory: https://github.com/rohitg00/agentmemory
+
 Automation setup AgentMemory cho Antigravity, Codex CLI và Claude Code.
 
-Mặc định cấu hình local embeddings bằng `all-MiniLM-L6-v2` qua AgentMemory local provider:
+Setup giữ `~/.agentmemory/.env` làm nguồn cấu hình chính, dùng local embedding model và bật automation qua proxy Antigravity CLI đã đăng nhập. API key là tùy chọn.
 
 ```env
 EMBEDDING_PROVIDER=local
 BM25_WEIGHT=0.4
 VECTOR_WEIGHT=0.6
 AGENTMEMORY_URL=http://localhost:3111
+AGENTMEMORY_AUTO_COMPRESS=true
+CONSOLIDATION_ENABLED=true
+GRAPH_EXTRACTION_ENABLED=true
+AGENTMEMORY_DROP_STALE_INDEX=false
+OPENAI_BASE_URL=http://127.0.0.1:3129
+OPENAI_MODEL=agy-cli
 ```
 
 ## Cài Nhanh
+
+Setup mặc định dùng cơ chế proxy qua Antigravity CLI đã đăng nhập, không cần API key:
 
 ```bash
 bash setup.sh
@@ -23,8 +33,6 @@ Chỉ setup một client:
 
 ```bash
 bash setup.sh --client antigravity
-bash setup.sh --client codex
-bash setup.sh --client claude-code
 ```
 
 Bỏ qua sync upstream nếu muốn chạy nhanh:
@@ -32,6 +40,17 @@ Bỏ qua sync upstream nếu muốn chạy nhanh:
 ```bash
 bash setup.sh --skip-upstream
 ```
+
+## Agy Local Proxy
+
+`setup.sh` không patch AgentMemory upstream. Script start một OpenAI-compatible proxy local tại `http://127.0.0.1:3129`, rồi cấu hình AgentMemory dùng provider `openai` sẵn có để gọi proxy này. Proxy chuyển request sang `agy --print-timeout 120s -p "<prompt>"`.
+
+Yêu cầu và giới hạn:
+
+- Cần `agy` CLI đã đăng nhập, mặc định tại `~/.local/bin/agy`.
+- Mỗi LLM call spawn CLI nên chậm hơn API trực tiếp.
+- Embeddings vẫn là local.
+- Hooks và automation dùng LLM được bật mặc định.
 
 ## Upstream Snapshot
 
@@ -69,6 +88,14 @@ Health:
 curl -fsSL http://localhost:3111/agentmemory/health
 ```
 
+Trước khi `setup.sh` restart AgentMemory, script sẽ backup runtime state vào:
+
+```text
+~/.agentmemory/backups/setup-<timestamp>/
+```
+
+Backup gồm thư mục `data/` local nếu có, `~/.agentmemory/standalone.json`, và file env hiện tại.
+
 ## Antigravity
 
 Antigravity chưa có upstream plugin AgentMemory, nên repo này tự setup:
@@ -81,42 +108,26 @@ Setup dùng sentinel block để không xóa nội dung cũ trong `GEMINI.md`.
 
 ## Codex CLI
 
-Codex CLI có upstream plugin AgentMemory. Setup ưu tiên:
-
-```bash
-codex plugin marketplace add rohitg00/agentmemory
-codex plugin install agentmemory
-```
-
-Nếu plugin install không khả dụng, setup fallback sang MCP-only trong:
+Setup ghi MCP fallback trong:
 
 ```text
 ~/.codex/config.toml
 ```
 
-Fallback không tự tạo custom hooks.
+Setup cũng cố gắng cài upstream AgentMemory plugin và chạy `agentmemory connect codex --with-hooks --force`.
 
 ## Claude Code
 
-Claude Code có upstream plugin mạnh nhất của AgentMemory. Setup thử:
-
-```bash
-agentmemory connect claude-code
-```
-
-Nếu không chạy được non-interactive, dùng thủ công trong Claude Code:
-
-```text
-/plugin marketplace add rohitg00/agentmemory
-/plugin install agentmemory
-```
+Setup cố gắng cài upstream Claude Code plugin và connect AgentMemory hooks khi có sẵn CLI `claude` và `agentmemory`.
 
 ## CLI
 
 Sau khi build:
 
 ```bash
-node dist/cli.js setup --client all
+node dist/cli.js setup --profile local --client all
+node dist/cli.js setup --profile agy-local --agy-bin ~/.local/bin/agy
+node dist/cli.js agy-proxy --host 127.0.0.1 --port 3129
 node dist/cli.js verify
 node dist/cli.js status
 ```
@@ -145,6 +156,4 @@ Chạy lại `setup.sh` sẽ cập nhật lại block này và copy lại skills
 ## Không Làm
 
 - Không fork AgentMemory upstream.
-- Không thay thế Codex/Claude upstream hooks bằng custom hooks.
 - Không yêu cầu API key cho embeddings.
-- Không bật LLM compression/consolidation mặc định.
