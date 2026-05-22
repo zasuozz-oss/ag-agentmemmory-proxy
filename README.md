@@ -2,11 +2,30 @@
 
 [English](README.md) | [Tiếng Việt](README.vi.md)
 
-Upstream AgentMemory repo: https://github.com/rohitg00/agentmemory
+Automation layer for [AgentMemory](https://github.com/rohitg00/agentmemory) on macOS — bridges Antigravity CLI, Codex CLI, and Claude Code to a local AgentMemory server without requiring any API key.
 
-Automation setup for AgentMemory across Antigravity, Codex CLI, and Claude Code on macOS.
+LLM calls are routed through the logged-in `agy` CLI. Embeddings run locally.
 
-`~/.agentmemory/.env` is the single source of truth for configuration. Embeddings run locally. LLM calls route through the logged-in Antigravity CLI proxy. No API key required.
+## How It Works
+
+```
+Claude Code / Codex / Antigravity
+        │
+        ▼
+  AgentMemory Server (port 3111)
+        │  openai provider → OPENAI_BASE_URL
+        ▼
+  agy-proxy  (port 3129, OpenAI-compatible)
+        │  spawns per request
+        ▼
+  agy-clean-wrapper.sh
+        │  snapshots brain/ & conversations/ before call
+        │  cleans up new entries after call (lsof-safe for concurrent calls)
+        ▼
+  agy CLI  (~/.local/bin/agy)
+```
+
+`~/.agentmemory/.env` is the single source of truth for configuration:
 
 ```env
 EMBEDDING_PROVIDER=local
@@ -21,15 +40,13 @@ OPENAI_BASE_URL=http://127.0.0.1:3129
 OPENAI_MODEL=agy-cli
 ```
 
-## Quick Install
-
-Default setup — uses the logged-in Antigravity CLI proxy, no API key:
+## Quick Start
 
 ```bash
 bash setup.sh
 ```
 
-Single client only:
+Single client:
 
 ```bash
 bash setup.sh --client antigravity
@@ -37,124 +54,77 @@ bash setup.sh --client codex
 bash setup.sh --client claude
 ```
 
-Skip upstream sync for faster execution:
+Skip upstream sync:
 
 ```bash
 bash setup.sh --skip-upstream
 ```
 
-## macOS LaunchAgent (Autostart)
+## LaunchAgent — Autostart on Login
 
-`set-run.sh` registers two persistent background services via macOS LaunchAgents so both the agy-proxy and the AgentMemory server start automatically at login and restart on crash:
+Registers two persistent background services via macOS LaunchAgents. Both restart automatically on crash.
 
 ```bash
 bash set-run.sh
 ```
 
-Services registered:
-
-| Label | Port | Log |
+| Service | Port | Log |
 |---|---|---|
 | `com.agentmemory.agy-proxy` | 3129 | `~/.agentmemory/agy-proxy.log` |
 | `com.agentmemory.server` | 3111 / 3113 | `~/.agentmemory/server.log` |
 
-Check status:
+All paths in `set-run.sh` are resolved dynamically — no hardcoded usernames or prefixes.
 
 ```bash
+# Check status
 launchctl list | grep agentmemory
+
+# View logs
+tail -f ~/.agentmemory/agy-proxy.log
+tail -f ~/.agentmemory/server.log
 ```
 
-## Agy Local Proxy
+## agy-clean-wrapper.sh
 
-`setup.sh` does not patch upstream AgentMemory. It starts a local OpenAI-compatible proxy at `http://127.0.0.1:3129`, then configures AgentMemory's existing `openai` provider to point to that proxy. The proxy forwards each request to `agy --print-timeout 120s -p "<prompt>"`.
+Wraps each `agy` invocation to prevent data accumulation in `~/.gemini/antigravity-cli/`:
 
-Requirements and limits:
+- Snapshots `brain/` and `conversations/` before the call
+- Deletes only entries created during this call after it completes
+- Uses `lsof` to avoid removing entries still open by concurrent agy calls
+- Handles `SIGTERM` / `SIGINT` via `trap` — cleanup runs even on proxy timeout
 
-- Requires a logged-in `agy` CLI, defaulting to `~/.local/bin/agy`.
-- `agy-clean-wrapper.sh` strips ANSI codes and control characters from `agy` output before forwarding.
-- Each LLM call spawns a CLI process — slower than direct API calls.
-- Embeddings remain local.
-- Hooks and LLM-backed automation are enabled by default.
+`AGY_REAL_BIN` overrides the agy binary path (default: `~/.local/bin/agy`).
 
 ## Upstream Snapshot
 
-Each time setup runs, the script clones or pulls upstream AgentMemory into:
+Each setup run clones or pulls upstream AgentMemory into `.agentmemory-upstream/`, then syncs it to `agentmemory/` (no git metadata). If network fails but `agentmemory/` exists, setup continues with the cached snapshot.
 
-```text
-.agentmemory-upstream/
-```
+## Clients
 
-Then syncs it to a working copy without git metadata:
+**Claude Code** — installs upstream plugin and connects AgentMemory hooks.
 
-```text
-agentmemory/
-```
+**Codex CLI** — writes MCP fallback config to `~/.codex/config.toml`, installs upstream plugin, runs `agentmemory connect codex --with-hooks --force`.
 
-`agentmemory/` keeps a local snapshot so docs, plugins, hooks, and scripts remain readable even if the upstream repository is deleted or unavailable. If pull or clone fails but `agentmemory/` already exists, setup continues with the existing snapshot.
+**Antigravity** — no upstream plugin exists; setup configures manually:
+- MCP config: `~/.gemini/antigravity/mcp_config.json`
+- Instructions: `~/.gemini/GEMINI.md` (sentinel block prevents overwrite)
+- Skills: `~/.gemini/antigravity/skills/`
 
 ## AgentMemory Server
 
-After setup, run the server manually:
-
 ```bash
-npx -y @agentmemory/agentmemory@latest
-```
-
-Viewer UI:
-
-```text
-http://localhost:3113
-```
-
-Health check:
-
-```bash
+# Health check
 curl -fsSL http://localhost:3111/agentmemory/health
+
+# Viewer UI
+open http://localhost:3113
 ```
 
-Before `setup.sh` restarts AgentMemory, it backs up runtime state to:
-
-```text
-~/.agentmemory/backups/setup-<timestamp>/
-```
-
-The backup includes the local `data/` directory (if present), `~/.agentmemory/standalone.json`, and the current env file.
-
-## Antigravity
-
-Antigravity has no upstream AgentMemory plugin yet. This repo sets it up manually:
-
-- MCP config: `~/.gemini/antigravity/mcp_config.json`
-- Instructions: `~/.gemini/GEMINI.md`
-- Skills: `~/.gemini/antigravity/skills/`
-
-A sentinel block prevents overwriting existing content in `GEMINI.md`:
-
-```text
-<!-- AGENTMEMORY_RULES_START -->
-...
-<!-- AGENTMEMORY_RULES_END -->
-```
-
-Running `setup.sh` again updates this block and recopies active skills.
-
-## Codex CLI
-
-Setup writes the MCP fallback configuration to:
-
-```text
-~/.codex/config.toml
-```
-
-Setup also attempts to install the upstream AgentMemory plugin and run `agentmemory connect codex --with-hooks --force`.
-
-## Claude Code
-
-Setup attempts to install the upstream Claude Code plugin and connect AgentMemory hooks when both `claude` and `agentmemory` CLIs are available.
+Before restarting, `setup.sh` backs up runtime state to `~/.agentmemory/backups/setup-<timestamp>/`.
 
 ## CLI
 
-After building (`npm run build`):
+After `npm run build`:
 
 ```bash
 node dist/cli.js setup --profile local --client all
@@ -166,17 +136,22 @@ node dist/cli.js status
 
 ## Custom Overlay
 
-Override any template by placing a file at the corresponding path under:
+Place files under `custom/instructions/` or `custom/skills/` to override any default template. Setup copies defaults first, then applies your overlay. Re-running `setup.sh` reapplies it.
 
-```text
-custom/instructions/
-custom/skills/
-```
+## Patches & Known Fixes
 
-Setup copies the default templates first, then overlays your custom files on top. Running `setup.sh` again re-applies the overlay.
+Local fixes applied on top of upstream — see [`docs/`](docs/) for details.
 
-## What We Do Not Do
+| File | Issue | Fix |
+|---|---|---|
+| `agentmemory/plugin/scripts/stop.mjs` | Missing `async: true` caused Stop hook to block 3+ min, silently failing summarization on Codex and Claude Code | Add `async: true` to summarize request body; reduce timeout to 5s |
 
-- Do not fork the AgentMemory upstream repository.
-- Do not require an API key for embeddings.
-- Do not patch upstream AgentMemory source files.
+When upstream overwrites these files, rebuild with `cd agentmemory && npm run build` — the source (`src/hooks/stop.ts`) already contains the correct logic.
+
+## Constraints
+
+- Requires a logged-in `agy` CLI
+- Each LLM call spawns a new CLI process — slower than direct API calls
+- Embeddings are local only
+- Does not fork or patch AgentMemory upstream source
+- Does not require an API key
