@@ -125,7 +125,9 @@ patch_agentmemory_env() {
   upsert_env "GRAPH_EXTRACTION_ENABLED" "true" "$AGENTMEMORY_ENV"
   upsert_env "AGENTMEMORY_INJECT_CONTEXT" "true" "$AGENTMEMORY_ENV"
   upsert_env "AGENTMEMORY_DROP_STALE_INDEX" "$DROP_STALE_INDEX" "$AGENTMEMORY_ENV"
-  upsert_env "AGY_CLI_BIN" "$AGY_BIN" "$AGENTMEMORY_ENV"
+  # Ghi wrapper path thay vì raw binary — wrapper bao gồm cleanup logic
+  local wrapper="${SCRIPT_DIR}/agy-clean-wrapper.sh"
+  upsert_env "AGY_CLI_BIN" "$wrapper" "$AGENTMEMORY_ENV"
   upsert_env "AGY_CLI_TIMEOUT_MS" "120000" "$AGENTMEMORY_ENV"
   upsert_env "AGY_CLI_SANDBOX" "false" "$AGENTMEMORY_ENV"
   upsert_env "AGY_PROXY_PORT" "$AGY_PORT" "$AGENTMEMORY_ENV"
@@ -149,6 +151,9 @@ start_agy_proxy() {
   step "Start agy OpenAI-compatible proxy"
   local log_file="${AGENTMEMORY_DIR}/agy-proxy.log"
   mkdir -p "$AGENTMEMORY_DIR"
+
+  # Export wrapper vào shell env để proxy child process kế thừa qua process.env
+  export AGY_CLI_BIN="${SCRIPT_DIR}/agy-clean-wrapper.sh"
 
   if proxy_healthy; then
     ok "agy proxy already healthy: http://127.0.0.1:${AGY_PORT}"
@@ -464,7 +469,7 @@ start_agentmemory_server() {
     warn "Could not install Xenova cache preload; local embeddings may use the package cache"
   fi
 
-  node - "$log_file" "$drop_value" "$TRANSFORMERS_CACHE" "$AGY_BIN" "$AGY_PORT" "$xenova_preload" <<'NODE'
+  node - "$log_file" "$drop_value" "$TRANSFORMERS_CACHE" "${SCRIPT_DIR}/agy-clean-wrapper.sh" "$AGY_PORT" "$xenova_preload" <<'NODE'
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -543,6 +548,7 @@ check_prerequisites() {
   require_command curl
   require_command agentmemory
   [[ -x "$AGY_BIN" ]] || err "agy binary not executable: $AGY_BIN"
+  [[ -x "${SCRIPT_DIR}/agy-clean-wrapper.sh" ]] || err "agy wrapper not found or not executable: ${SCRIPT_DIR}/agy-clean-wrapper.sh"
   node -e "process.exit(Number.parseInt(process.versions.node.split('.')[0], 10) >= 20 ? 0 : 1)" || err "Node.js >= 20 required"
   ok "Prerequisites available"
 }

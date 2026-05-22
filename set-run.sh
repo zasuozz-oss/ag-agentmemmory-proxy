@@ -1,22 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ─── Config ───────────────────────────────────────────────────────────────────
+# ─── Config (tất cả paths động — không hardcode username/prefix) ───────────────
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 AGY_PROXY_LABEL="com.agentmemory.agy-proxy"
 AGENTMEMORY_LABEL="com.agentmemory.server"
 
 AGY_PROXY_PLIST="$HOME/Library/LaunchAgents/${AGY_PROXY_LABEL}.plist"
 AGENTMEMORY_PLIST="$HOME/Library/LaunchAgents/${AGENTMEMORY_LABEL}.plist"
 
-NODE_BIN="/opt/homebrew/bin/node"
-AGY_PROXY_SCRIPT="/Users/zasuo/AI-Tool/ag-agentmemory/dist/cli.js"
-AGENTMEMORY_BIN="/opt/homebrew/lib/node_modules/@agentmemory/agentmemory/dist/index.mjs"
+NODE_BIN="$(command -v node 2>/dev/null || echo "/opt/homebrew/bin/node")"
+AGY_PROXY_SCRIPT="${SCRIPT_DIR}/dist/cli.js"
+AGENTMEMORY_BIN="$(npm root -g 2>/dev/null)/@agentmemory/agentmemory/dist/index.mjs"
 
 LOG_DIR="$HOME/.agentmemory"
 AGY_PROXY_LOG="$LOG_DIR/agy-proxy.log"
 AGENTMEMORY_LOG="$LOG_DIR/server.log"
 
-WORK_DIR="/Users/zasuo/AI-Tool/ag-agentmemory"
+WORK_DIR="${SCRIPT_DIR}"
+LOCAL_BIN="${HOME}/.local/bin"
+XENOVA_CACHE="${HOME}/.cache/xenova-transformers"
+WRAPPER="${SCRIPT_DIR}/agy-clean-wrapper.sh"
 # ──────────────────────────────────────────────────────────────────────────────
 
 mkdir -p "$LOG_DIR"
@@ -36,9 +41,9 @@ write_agy_proxy_plist() {
   </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/Users/zasuo/.local/bin</string>
+    <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${LOCAL_BIN}</string>
     <key>AGY_PROXY_PORT</key><string>3129</string>
-    <key>AGY_CLI_BIN</key><string>/Users/zasuo/AI-Tool/ag-agentmemory/agy-clean-wrapper.sh</string>
+    <key>AGY_CLI_BIN</key><string>${WRAPPER}</string>
   </dict>
   <key>WorkingDirectory</key><string>${WORK_DIR}</string>
   <key>StandardOutPath</key><string>${AGY_PROXY_LOG}</string>
@@ -66,8 +71,8 @@ write_agentmemory_plist() {
   </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>TRANSFORMERS_CACHE</key><string>/Users/zasuo/.cache/xenova-transformers</string>
-    <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/Users/zasuo/.local/bin</string>
+    <key>TRANSFORMERS_CACHE</key><string>${XENOVA_CACHE}</string>
+    <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${LOCAL_BIN}</string>
   </dict>
   <key>WorkingDirectory</key><string>${WORK_DIR}</string>
   <key>StandardOutPath</key><string>${AGENTMEMORY_LOG}</string>
@@ -116,9 +121,17 @@ wait_for_port() {
   return 1
 }
 
+# ─── Validate trước khi tiếp tục ──────────────────────────────────────────────
+[[ -f "$AGY_PROXY_SCRIPT" ]] || { echo "[ERROR] dist/cli.js not found — run 'npm run build' first"; exit 1; }
+[[ -f "$AGENTMEMORY_BIN" ]] || { echo "[ERROR] @agentmemory/agentmemory not found at: $AGENTMEMORY_BIN"; exit 1; }
+[[ -x "$WRAPPER" ]] || { echo "[ERROR] wrapper not executable: $WRAPPER"; exit 1; }
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 echo ""
 echo "=== agentmemory + agy-proxy setup ==="
+echo "  SCRIPT_DIR : ${SCRIPT_DIR}"
+echo "  NODE_BIN   : ${NODE_BIN}"
+echo "  WRAPPER    : ${WRAPPER}"
 echo ""
 
 echo "[1/4] Writing LaunchAgent plists..."
