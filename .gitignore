@@ -9,8 +9,9 @@ agentmemory/dist/
 # AgentMemory runtime data (generated at runtime, not source)
 data/
 
-# Upstream snapshot (cloned at setup time, not source)
+# Upstream snapshots (cloned at setup time, not source)
 .agentmemory-upstream/
+agentmemory/
 
 # Logs
 *.log
