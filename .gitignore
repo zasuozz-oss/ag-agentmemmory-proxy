@@ -1,13 +1,15 @@
 # Dependencies
 node_modules/
+agentmemory/node_modules/
 
 # Build output
 dist/
+agentmemory/dist/
 
-# AgentMemory runtime data
+# AgentMemory runtime data (generated at runtime, not source)
 data/
 
-# Upstream snapshot (cloned at setup time)
+# Upstream snapshot (cloned at setup time, not source)
 .agentmemory-upstream/
 
 # Logs
