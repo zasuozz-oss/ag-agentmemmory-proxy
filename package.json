@@ -1,14 +1,13 @@
 {
-  "name": "ag-agentmemory",
+  "name": "ag-agentmemmory-proxy",
   "version": "0.1.0",
-  "description": "Antigravity, Codex CLI, and Claude Code setup automation for AgentMemory",
+  "description": "OpenAI-compatible agy CLI proxy for AgentMemory upstream",
   "type": "module",
   "bin": {
-    "agentmemory-ag": "dist/cli.js"
+    "ag-agentmemmory-proxy": "dist/cli.js"
   },
   "files": [
     "dist",
-    "src/templates",
     "setup.sh",
     "README.vi.md"
   ],
@@ -17,6 +16,7 @@
     "dev": "tsx src/cli.ts",
     "verify": "node dist/cli.js verify",
     "status": "node dist/cli.js status",
+    "test": "npm run build && node --test test/*.test.mjs",
     "prepack": "npm run build"
   },
   "dependencies": {

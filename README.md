@@ -1,157 +1,222 @@
-# ag-agentmemory
+# ag-agentmemmory-proxy
 
-[English](README.md) | [Tiếng Việt](README.vi.md)
+[README](README.md) | [Tiếng Việt](README.vi.md)
 
-Automation layer for [AgentMemory](https://github.com/rohitg00/agentmemory) on macOS — bridges Antigravity CLI, Codex CLI, and Claude Code to a local AgentMemory server without requiring any API key.
+`ag-agentmemmory-proxy` cung cấp một proxy cục bộ tương thích OpenAI cho `agy-cli`. Proxy chạy trên máy local, nhận request dạng OpenAI chat completions, rồi chuyển prompt sang `agy` CLI đã đăng nhập.
 
-LLM calls are routed through the logged-in `agy` CLI. Embeddings run locally.
+Nguồn AgentMemory upstream: https://github.com/rohitg00/agentmemory
 
-## How It Works
+## Tổng Quan Setup
 
-```
-Claude Code / Codex / Antigravity
-        │
-        ▼
-  AgentMemory Server (port 3111)
-        │  openai provider → OPENAI_BASE_URL
-        ▼
-  agy-proxy  (port 3129, OpenAI-compatible)
-        │  spawns per request
-        ▼
-  agy-clean-wrapper.sh
-        │  snapshots brain/ & conversations/ before call
-        │  cleans up new entries after call (lsof-safe for concurrent calls)
-        ▼
-  agy CLI  (~/.local/bin/agy)
-```
+Thứ tự setup khuyến dùng:
 
-`~/.agentmemory/.env` is the single source of truth for configuration:
+1. Cài và chạy AgentMemory upstream.
+2. Cấu hình Claude Code.
+3. Cấu hình Codex CLI.
+4. Chạy proxy của repo này.
+5. Trỏ AgentMemory upstream về endpoint proxy nếu muốn dùng `agy-cli` làm LLM provider.
 
-```env
-EMBEDDING_PROVIDER=local
-BM25_WEIGHT=0.4
-VECTOR_WEIGHT=0.6
-AGENTMEMORY_URL=http://localhost:3111
-AGENTMEMORY_AUTO_COMPRESS=true
-CONSOLIDATION_ENABLED=true
-GRAPH_EXTRACTION_ENABLED=true
-AGENTMEMORY_DROP_STALE_INDEX=false
-OPENAI_BASE_URL=http://127.0.0.1:3129
-OPENAI_MODEL=agy-cli
+## 1. Setup AgentMemory Upstream
+
+Cài AgentMemory CLI một lần:
+
+```bash
+npm install -g @agentmemory/agentmemory
 ```
 
-## Quick Start
+Hoặc chạy bằng `npx`:
+
+```bash
+npx -y @agentmemory/agentmemory@latest
+```
+
+Chạy memory server trong một terminal riêng:
+
+```bash
+agentmemory
+```
+
+Kiểm tra server:
+
+```bash
+curl -fsSL http://localhost:3111/agentmemory/health
+```
+
+Viewer upstream:
+
+```text
+http://localhost:3113
+```
+
+Lệnh hữu ích:
+
+```bash
+agentmemory doctor
+agentmemory stop
+agentmemory remove
+```
+
+## 2. Setup Claude Code
+
+Trong Claude Code, cài AgentMemory plugin:
+
+```text
+/plugin marketplace add rohitg00/agentmemory
+/plugin install agentmemory
+```
+
+Plugin sẽ wire MCP server, hooks, và skills của AgentMemory cho Claude Code. Sau khi cài xong, restart Claude Code nếu tool hoặc plugin chưa hiển thị ngay.
+
+Kiểm tra:
+
+```bash
+curl -fsSL http://localhost:3111/agentmemory/health
+agentmemory doctor
+```
+
+Nếu muốn wire hook/MCP bằng AgentMemory CLI:
+
+```bash
+agentmemory connect claude-code --with-hooks
+```
+
+Chạy lại command này sau mỗi lần upgrade AgentMemory nếu hook path thay đổi.
+
+## 3. Setup Codex CLI
+
+Cài AgentMemory plugin cho Codex CLI:
+
+```bash
+codex plugin marketplace add rohitg00/agentmemory
+codex plugin add agentmemory@agentmemory
+```
+
+Plugin sẽ đăng ký MCP server, lifecycle hooks, và skills của AgentMemory cho Codex CLI.
+
+Kiểm tra:
+
+```bash
+curl -fsSL http://localhost:3111/agentmemory/health
+agentmemory doctor
+```
+
+Nếu dùng Codex Desktop hoặc môi trường cần mirror hook vào user-scope:
+
+```bash
+agentmemory connect codex --with-hooks
+```
+
+Nếu chỉ cần MCP fallback cho Codex:
+
+```bash
+codex mcp add agentmemory -- npx -y @agentmemory/mcp
+```
+
+## 4. Setup Proxy
+
+Proxy expose endpoint OpenAI-compatible ở `127.0.0.1:3129` và gọi `agy-clean-wrapper.sh` cho mỗi request.
 
 ```bash
 bash setup.sh
 ```
 
-Single client:
+Script sẽ:
+
+- chạy `npm install` và `npm run build`
+- ghi config proxy vào `~/.ag-agentmemmory-proxy/proxy.env`
+- start hoặc reuse `agy-proxy`
+- kiểm tra `http://127.0.0.1:3129/health`
+
+Nếu đã build sẵn:
 
 ```bash
-bash setup.sh --client antigravity
-bash setup.sh --client codex
-bash setup.sh --client claude
+bash setup.sh --skip-build
 ```
 
-Skip upstream sync:
+Tùy chọn:
 
 ```bash
-bash setup.sh --skip-upstream
+bash setup.sh --agy-bin /path/to/agy-clean-wrapper.sh
+bash setup.sh --host 127.0.0.1 --port 3129
+bash setup.sh --timeout-ms 120000
+bash setup.sh --sandbox
 ```
 
-## LaunchAgent — Autostart on Login
+## 5. Trỏ AgentMemory Về Proxy
 
-Registers two persistent background services via macOS LaunchAgents. Both restart automatically on crash.
+Sau khi proxy chạy, cấu hình provider OpenAI-compatible của AgentMemory upstream trỏ về endpoint local:
+
+```env
+OPENAI_BASE_URL=http://127.0.0.1:3129
+OPENAI_MODEL=agy-cli
+```
+
+Restart AgentMemory sau khi cập nhật config:
+
+```bash
+agentmemory stop
+agentmemory
+```
+
+## CLI Proxy
+
+```bash
+npm run build
+node dist/cli.js setup
+node dist/cli.js agy-proxy --host 127.0.0.1 --port 3129
+node dist/cli.js status
+node dist/cli.js verify
+```
+
+`setup` có thể nhận các option:
+
+```bash
+node dist/cli.js setup --host 127.0.0.1 --port 3129
+node dist/cli.js setup --agy-bin ./agy-clean-wrapper.sh --timeout-ms 120000
+node dist/cli.js setup --sandbox
+```
+
+## Config Proxy
+
+Setup ghi các file proxy tại:
+
+```text
+~/.ag-agentmemmory-proxy/proxy.env
+~/.ag-agentmemmory-proxy/agy-proxy.log
+```
+
+Ví dụ `proxy.env`:
+
+```env
+AGY_PROXY_HOST=127.0.0.1
+AGY_PROXY_PORT=3129
+AGY_CLI_BIN=/path/to/ag-agentmemmory-proxy/agy-clean-wrapper.sh
+AGY_CLI_TIMEOUT_MS=120000
+AGY_CLI_SANDBOX=false
+```
+
+## LaunchAgent
+
+Để chạy proxy khi login trên macOS:
 
 ```bash
 bash set-run.sh
 ```
 
-| Service | Port | Log |
-|---|---|---|
-| `com.agentmemory.agy-proxy` | 3129 | `~/.agentmemory/agy-proxy.log` |
-| `com.agentmemory.server` | 3111 / 3113 | `~/.agentmemory/server.log` |
+Log:
 
-All paths in `set-run.sh` are resolved dynamically — no hardcoded usernames or prefixes.
-
-```bash
-# Check status
-launchctl list | grep agentmemory
-
-# View logs
-tail -f ~/.agentmemory/agy-proxy.log
-tail -f ~/.agentmemory/server.log
+```text
+~/.ag-agentmemmory-proxy/agy-proxy.log
 ```
 
-## agy-clean-wrapper.sh
-
-Wraps each `agy` invocation to prevent data accumulation in `~/.gemini/antigravity-cli/`:
-
-- Snapshots `brain/` and `conversations/` before the call
-- Deletes only entries created during this call after it completes
-- Uses `lsof` to avoid removing entries still open by concurrent agy calls
-- Handles `SIGTERM` / `SIGINT` via `trap` — cleanup runs even on proxy timeout
-
-`AGY_REAL_BIN` overrides the agy binary path (default: `~/.local/bin/agy`).
-
-## Upstream Snapshot
-
-Each setup run clones or pulls upstream AgentMemory into `.agentmemory-upstream/`, then syncs it to `agentmemory/` (no git metadata). If network fails but `agentmemory/` exists, setup continues with the cached snapshot.
-
-## Clients
-
-**Claude Code** — installs upstream plugin and connects AgentMemory hooks.
-
-**Codex CLI** — writes MCP fallback config to `~/.codex/config.toml`, installs upstream plugin, runs `agentmemory connect codex --with-hooks --force`.
-
-**Antigravity** — no upstream plugin exists; setup configures manually:
-- MCP config: `~/.gemini/antigravity/mcp_config.json`
-- Instructions: `~/.gemini/GEMINI.md` (sentinel block prevents overwrite)
-- Skills: `~/.gemini/antigravity/skills/`
-
-## AgentMemory Server
+## Health Check
 
 ```bash
-# Health check
-curl -fsSL http://localhost:3111/agentmemory/health
-
-# Viewer UI
-open http://localhost:3113
+curl -fsSL http://127.0.0.1:3129/health
 ```
 
-Before restarting, `setup.sh` backs up runtime state to `~/.agentmemory/backups/setup-<timestamp>/`.
+Kết quả hợp lệ:
 
-## CLI
-
-After `npm run build`:
-
-```bash
-node dist/cli.js setup --profile local --client all
-node dist/cli.js setup --profile agy-local --agy-bin ~/.local/bin/agy
-node dist/cli.js agy-proxy --host 127.0.0.1 --port 3129
-node dist/cli.js verify
-node dist/cli.js status
+```json
+{"ok":true,"service":"agy-proxy"}
 ```
-
-## Custom Overlay
-
-Place files under `custom/instructions/` or `custom/skills/` to override any default template. Setup copies defaults first, then applies your overlay. Re-running `setup.sh` reapplies it.
-
-## Patches & Known Fixes
-
-Local fixes applied on top of upstream — see [`docs/`](docs/) for details.
-
-| File | Issue | Fix |
-|---|---|---|
-| `agentmemory/plugin/scripts/stop.mjs` | Missing `async: true` caused Stop hook to block 3+ min, silently failing summarization on Codex and Claude Code | Add `async: true` to summarize request body; reduce timeout to 5s |
-
-When upstream overwrites these files, rebuild with `cd agentmemory && npm run build` — the source (`src/hooks/stop.ts`) already contains the correct logic.
-
-## Constraints
-
-- Requires a logged-in `agy` CLI
-- Each LLM call spawns a new CLI process — slower than direct API calls
-- Embeddings are local only
-- Does not fork or patch AgentMemory upstream source
-- Does not require an API key

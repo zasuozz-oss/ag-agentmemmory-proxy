@@ -1,7 +1,13 @@
 import { spawn } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_PROMPT_BYTES = 200_000;
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const projectRoot = path.resolve(__dirname, '..', '..');
+const DEFAULT_AGY_BIN = path.join(projectRoot, 'agy-clean-wrapper.sh');
 
 export type AgyRunOptions = {
   bin?: string;
@@ -33,7 +39,7 @@ export async function runAgyPrompt(prompt: string, options: AgyRunOptions = {}):
 }
 
 async function runAgyPromptNow(prompt: string, options: AgyRunOptions): Promise<string> {
-  const bin = options.bin || process.env.AGY_CLI_BIN || `${process.env.HOME || ''}/.local/bin/agy`;
+  const agyBin = options.bin || process.env.AGY_CLI_BIN || DEFAULT_AGY_BIN;
   const timeoutMs = options.timeoutMs || Number.parseInt(process.env.AGY_CLI_TIMEOUT_MS || '', 10) || DEFAULT_TIMEOUT_MS;
   const promptBytes = Buffer.byteLength(prompt, 'utf8');
 
@@ -47,7 +53,7 @@ async function runAgyPromptNow(prompt: string, options: AgyRunOptions): Promise<
 
   return new Promise((resolve, reject) => {
     const cwd = process.env.AGY_PROXY_WORKDIR || '/private/tmp';
-  const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'], cwd });
+    const child = spawn(agyBin, args, { stdio: ['ignore', 'pipe', 'pipe'], cwd });
     let stdout = '';
     let stderr = '';
     const timer = setTimeout(() => {
