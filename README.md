@@ -1,226 +1,239 @@
-# ag-agentmemmory-proxy
+# ag-agentmemory
 
-[English](README.md) | [Tiếng Việt](README.vi.md)
+[English](README.md) · [Tiếng Việt](README.vi.md)
 
-A local OpenAI-compatible proxy for `agy-cli`. The proxy runs on your machine, accepts OpenAI chat completion requests, and forwards each prompt to the authenticated `agy` CLI.
+> Production installer that wires [AgentMemory](https://github.com/rohitg00/agentmemory) into **Claude Code**, **Codex CLI**, and **Antigravity**, and runs a local **OpenAI-compatible proxy** backed by the authenticated `agy` CLI — so AgentMemory works across all three agents with **zero API keys**.
 
-Upstream AgentMemory: https://github.com/rohitg00/agentmemory
+---
 
-## Setup Overview
+## Table of Contents
 
-1. Install AgentMemory globally.
-2. Install the Claude Code plugin (hooks wired automatically).
-3. Install the Codex CLI plugin and trust hooks interactively.
-4. Run `bash setup.sh` — builds the proxy, registers agentmemory to start at login, and starts everything.
-5. Point AgentMemory upstream at the proxy endpoint if you want to use `agy-cli` as the LLM provider.
+- [Quick Start](#quick-start)
+- [CLI Reference](#cli-reference)
+- [Verification](#verification)
+- [Troubleshooting](#troubleshooting)
+- [Uninstall](#uninstall)
+- [Overview](#overview)
+- [Architecture](#architecture)
+- [What Gets Installed](#what-gets-installed)
+- [Project Layout](#project-layout)
 
-## 1. Install AgentMemory
+---
 
-> **macOS + Homebrew node**: npm global requires sudo because Homebrew owns the `node_modules` directory.
+## Quick Start
 
 ```bash
+# 1. Install the AgentMemory CLI (one-time, requires sudo)
 sudo npm install -g @agentmemory/agentmemory
-```
 
-Verify:
-
-```bash
-agentmemory status
-curl -fsSL http://localhost:3111/agentmemory/health
-```
-
-Viewer: `http://localhost:3113`
-
-Useful commands:
-
-```bash
-agentmemory doctor   # diagnose and auto-fix issues
-agentmemory stop
-agentmemory status
-```
-
-## 2. Claude Code Setup (Plugin + 12 Hooks)
-
-The Claude Code plugin automatically wires **12 hooks**: SessionStart, UserPromptSubmit, PreToolUse,
-PostToolUse, PostToolUseFailure, PreCompact, SubagentStart, SubagentStop, Notification,
-TaskCompleted, Stop, SessionEnd.
-
-Run these two commands inside Claude Code:
-
-```text
-/plugin marketplace add rohitg00/agentmemory
-/plugin install agentmemory
-```
-
-Restart Claude Code after installing. Hooks activate immediately — no further action needed.
-
-## 3. Codex CLI Setup (Plugin + 6 Hooks)
-
-The Codex plugin wires **6 hooks**: session_start, user_prompt_submit, pre_tool_use, post_tool_use,
-pre_compact, stop.
-
-**Step 1** — Install the plugin from a terminal:
-
-```bash
-codex plugin marketplace add rohitg00/agentmemory
-codex plugin add agentmemory@agentmemory
-```
-
-**Step 2** — Trust hooks inside the Codex TUI (required):
-
-```bash
-codex
-```
-
-When Codex displays `"Trust this hook?"` for each hook, choose **Yes / Always trust**.
-All 6 hooks must be accepted. Afterwards `~/.codex/config.toml` will contain 6 entries:
-
-```toml
-[hooks.state."agentmemory@agentmemory:hooks/hooks.codex.json:session_start:0:0"]
-trusted_hash = "sha256:..."
-# ... (6 entries total)
-```
-
-Verify:
-
-```bash
-grep "hooks.state.*agentmemory" ~/.codex/config.toml | wc -l
-# must return 6
-```
-
-> **Note**: If the plugin is removed and reinstalled, all `trusted_hash` entries are wiped.
-> Open the Codex TUI again and re-trust all 6 hooks.
-
-## 4. Proxy Setup + Auto-Start
-
-`setup.sh` does everything in one run:
-
-- Builds the proxy (`npm install` + `npm run build`)
-- Writes config to `~/.ag-agentmemmory-proxy/proxy.env`
-- Starts the agy proxy on `127.0.0.1:3129`
-- **Registers agentmemory server to start automatically at login**:
-  - **macOS**: creates LaunchAgent `com.agentmemory` (KeepAlive — restarts on crash)
-  - **Windows** (Git Bash / MSYS2): creates Task Scheduler task `AgentMemory` (ONLOGON)
-
-```bash
+# 2. Run the installer (no sudo)
 bash setup.sh
 ```
 
-Options:
+Then restart Claude Code, Codex, Antigravity, and open a new terminal.
+
+> First time opening the Codex TUI: accept all 6 agentmemory hook prompts when asked.
+
+---
+
+## CLI Reference
 
 ```bash
-bash setup.sh --skip-build                         # skip npm install/build
-bash setup.sh --skip-agentmemory-startup           # skip auto-start registration
-bash setup.sh --agentmemory-bin /path/to/binary    # specify binary manually
-bash setup.sh --agy-bin /path/to/agy-clean-wrapper.sh
-bash setup.sh --host 127.0.0.1 --port 3129
-bash setup.sh --timeout-ms 120000
-bash setup.sh --sandbox
+bash setup.sh [options]
 ```
 
-Files created:
+**Client wiring**
 
-```text
-~/.ag-agentmemmory-proxy/proxy.env            # proxy config
-~/.ag-agentmemmory-proxy/agy-proxy.log        # agy proxy log
-~/.ag-agentmemmory-proxy/agentmemory.log      # agentmemory server log
-~/Library/LaunchAgents/com.agentmemory.plist  # macOS startup plist (auto-created)
-```
+| Flag                                              | Default | Description                                  |
+| ------------------------------------------------- | ------- | -------------------------------------------- |
+| `--client <all\|claude-code\|codex\|antigravity>` | `all`   | Limit installation to a single client        |
+| `--force`                                         | off     | Re-wire even if already installed            |
+| `--skip-env`                                      | off     | Do not modify shell profiles                 |
 
-### macOS — Manage LaunchAgent manually
+**Proxy / daemon**
+
+| Flag                          | Default                  | Description                                     |
+| ----------------------------- | ------------------------ | ----------------------------------------------- |
+| `--skip-proxy`                | off                      | Skip building / starting the agy proxy + daemon |
+| `--skip-build`                | off                      | Skip `npm install && npm run build`             |
+| `--agy-bin <path>`            | `./agy-clean-wrapper.sh` | Path to the `agy` wrapper or binary             |
+| `--host <host>`               | `127.0.0.1`              | Proxy bind host                                 |
+| `--port <number>`             | `3129`                   | Proxy bind port                                 |
+| `--timeout-ms <number>`       | `120000`                 | `agy` CLI timeout in milliseconds               |
+| `--sandbox`                   | off                      | Pass `--sandbox` to the `agy` CLI               |
+| `--agentmemory-bin <path>`    | auto-detect              | Override the `agentmemory` binary path          |
+| `--skip-agentmemory-startup`  | off                      | Do not register the daemon as a startup task    |
+| `-h`, `--help`                |                          | Show usage                                      |
+
+The proxy phase is idempotent — re-running `bash setup.sh` is safe and skips work if the proxy is already healthy.
+
+---
+
+## Verification
 
 ```bash
-# Stop
-launchctl unload ~/Library/LaunchAgents/com.agentmemory.plist
+# Proxy health
+curl -fsSL http://127.0.0.1:3129/health
 
-# Restart
-launchctl load ~/Library/LaunchAgents/com.agentmemory.plist
-
-# View logs
-tail -f ~/.ag-agentmemmory-proxy/agentmemory.log
-```
-
-### Windows — Manage Task Scheduler manually
-
-```bash
-schtasks.exe /End    /TN AgentMemory          # stop
-schtasks.exe /Run    /TN AgentMemory          # start
-schtasks.exe /Delete /TN AgentMemory /F       # remove
-```
-
-### agy proxy LaunchAgent (macOS)
-
-To also auto-start the agy proxy at login:
-
-```bash
-bash set-run.sh
-```
-
-## 5. Point AgentMemory at the Proxy
-
-After the proxy is running, configure AgentMemory upstream to use the local endpoint as its LLM provider:
-
-```env
-OPENAI_BASE_URL=http://127.0.0.1:3129
-OPENAI_MODEL=agy-cli
-```
-
-Restart AgentMemory:
-
-```bash
-agentmemory stop
-agentmemory
-```
-
-## Proxy CLI
-
-```bash
-npm run build
-node dist/cli.js agy-proxy --host 127.0.0.1 --port 3129
-node dist/cli.js status
-node dist/cli.js verify
-```
-
-## Proxy Config
-
-```env
-AGY_PROXY_HOST=127.0.0.1
-AGY_PROXY_PORT=3129
-AGY_CLI_BIN=/path/to/ag-agentmemmory-proxy/agy-clean-wrapper.sh
-AGY_CLI_TIMEOUT_MS=120000
-AGY_CLI_SANDBOX=false
-```
-
-## Health Check
-
-```bash
-# AgentMemory server
+# AgentMemory daemon health
 curl -fsSL http://localhost:3111/agentmemory/health
 
-# agy proxy
-curl -fsSL http://127.0.0.1:3129/health
-# {"ok":true,"service":"agy-proxy"}
+# CLI status
+agentmemory status
+agentmemory doctor
 ```
+
+Dashboard: open `http://localhost:3113` in a browser.
+
+Live logs:
+
+```bash
+tail -f ~/.ag-agentmemmory-proxy/agy-proxy.log         # proxy
+tail -f ~/.ag-agentmemmory-proxy/agentmemory.log       # daemon (macOS/Windows startup task)
+```
+
+---
+
+## Troubleshooting
+
+| Symptom                                                          | Fix                                                                                                 |
+| ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| MCP tools not visible in Claude Code / Codex / Antigravity       | Restart the client. New shell must have `AGENTMEMORY_URL` exported (re-open terminal).              |
+| Codex shows hook trust prompts but tools still missing           | Accept **all 6** hooks in the TUI, then restart Codex.                                              |
+| `agy-cli` proxy returns 502 / hangs                              | `agy login` (token may have expired). Then `bash setup.sh --skip-build`.                            |
+| `agentmemory doctor` reports daemon not running                  | macOS: `launchctl load ~/Library/LaunchAgents/com.agentmemory.plist`. Windows: `schtasks /Run /TN AgentMemory`. |
+| Port already in use (`:3111`, `:3129`, `:3113`)                  | Stop the conflicting process or change `--port` for the proxy.                                      |
+| `GEMINI.md` rules block missing                                  | Re-run `bash setup.sh --client antigravity --force`.                                                |
+
+---
 
 ## Uninstall
 
 ```bash
-# Remove AgentMemory
-agentmemory remove
-rm -rf ~/.agentmemory
-sudo rm -rf /opt/homebrew/lib/node_modules/@agentmemory  # macOS Homebrew
+# Stop services
+agentmemory stop 2>/dev/null || true
+launchctl unload ~/Library/LaunchAgents/com.agentmemory.plist 2>/dev/null || true   # macOS
+schtasks /Delete /TN AgentMemory /F 2>/dev/null || true                              # Windows
 
-# Remove LaunchAgent (macOS)
-launchctl unload ~/Library/LaunchAgents/com.agentmemory.plist
-rm ~/Library/LaunchAgents/com.agentmemory.plist
+# Remove data and config
+rm -rf ~/.agentmemory ~/.ag-agentmemmory-proxy
+rm -f  ~/Library/LaunchAgents/com.agentmemory.plist
 
-# Remove Task Scheduler task (Windows)
-schtasks.exe /Delete /TN AgentMemory /F
-
-# Remove Codex plugin
-codex plugin remove agentmemory@agentmemory
-codex plugin marketplace remove agentmemory
-
-# Remove Claude Code plugin (inside Claude Code)
-/plugin uninstall agentmemory
+# Uninstall the CLI
+sudo npm uninstall -g @agentmemory/agentmemory
 ```
+
+Then remove the `agentmemory` entries (and the `<!-- AGENTMEMORY_RULES_START/END -->` block) from:
+
+- `~/.claude/settings.json`
+- `~/.claude.json`
+- `~/.codex/config.toml`
+- `~/.gemini/antigravity/mcp_config.json`
+- `~/.gemini/GEMINI.md`
+- `~/.zshrc` / `~/.bashrc` / `~/.bash_profile`
+
+---
+
+## Overview
+
+AgentMemory is a persistent memory daemon for AI coding agents. Wiring it manually across multiple tools is tedious and error-prone — each client has a different config format (JSON / TOML / skill files), different hook system, and different startup model.
+
+`ag-agentmemory` automates the entire setup in one command:
+
+- Connects AgentMemory as an **MCP server** in Claude Code, Codex, and Antigravity.
+- Installs **hooks** so the daemon auto-starts with each session.
+- Drops **8 user-invocable skills** (`/recall`, `/remember`, `/forget`, …) into Antigravity.
+- Spins up a local **`agy-cli` OpenAI-compatible proxy** on `:3129`, letting AgentMemory call the logged-in Antigravity CLI as its LLM provider — no `OPENAI_API_KEY` needed.
+- Registers the daemon as a **startup service** (LaunchAgent on macOS, Task Scheduler on Windows) so it survives reboots.
+
+Supported on **macOS** and **Windows** (Git Bash / MSYS2).
+
+**Other prerequisites** (besides the `agentmemory` CLI in Quick Start): `node` ≥ 18, `npm`, `agy` CLI logged in (`agy login`), plus `claude` and/or `codex` CLI for the clients you target.
+
+---
+
+## Architecture
+
+```
+┌──────────────┐   ┌──────────────┐   ┌──────────────┐
+│ Claude Code  │   │  Codex CLI   │   │ Antigravity  │
+│  (MCP+hooks) │   │   (MCP)      │   │ (MCP+skills) │
+└──────┬───────┘   └──────┬───────┘   └──────┬───────┘
+       │ stdio MCP        │ stdio MCP        │ stdio MCP
+       └──────────────────┼──────────────────┘
+                          ▼
+                ┌─────────────────────┐
+                │  AgentMemory daemon │   :3111   (LaunchAgent / Task Scheduler)
+                │     + Dashboard     │   :3113
+                └──────────┬──────────┘
+                           │ OpenAI-compatible HTTP
+                           ▼
+                ┌─────────────────────┐
+                │   agy-cli proxy     │   :3129   (Node background process)
+                └──────────┬──────────┘
+                           │ exec
+                           ▼
+                ┌─────────────────────┐
+                │  agy CLI (logged-in)│
+                └─────────────────────┘
+```
+
+---
+
+## What Gets Installed
+
+### Runtime services
+
+| Service                | Address                                | Auto-start                                  |
+| ---------------------- | -------------------------------------- | ------------------------------------------- |
+| AgentMemory daemon     | `http://localhost:3111`                | LaunchAgent (macOS) / Task Scheduler (Win)  |
+| AgentMemory dashboard  | `http://localhost:3113`                | Served by the daemon                        |
+| `agy-cli` proxy        | `http://127.0.0.1:3129`                | Background Node process spawned by setup    |
+
+### Per-client wiring
+
+| Client       | MCP config                                  | Hooks / extras                                                                  |
+| ------------ | ------------------------------------------- | ------------------------------------------------------------------------------- |
+| Claude Code  | `~/.claude.json` (via `agentmemory connect`)| `SessionStart` + `Stop` hooks merged into `~/.claude/settings.json`             |
+| Codex CLI    | `~/.codex/config.toml`                      | 6 hooks (manual trust in TUI)                                                   |
+| Antigravity  | `~/.gemini/antigravity/mcp_config.json`     | 8 skills in `~/.gemini/antigravity/skills/` + rules block in `~/.gemini/GEMINI.md` |
+
+### Antigravity skills
+
+| Skill              | Purpose                                                  |
+| ------------------ | -------------------------------------------------------- |
+| `/recall`          | Search past observations across sessions                 |
+| `/remember`        | Save an insight, decision, or learning                   |
+| `/forget`          | Delete specific observations or sessions                 |
+| `/handoff`         | Resume the most recent session for the current project   |
+| `/recap`           | Summarize recent sessions over a time window             |
+| `/session-history` | List recent sessions for this project                    |
+| `/commit-context`  | Trace a file/function back to the session that wrote it  |
+| `/commit-history`  | List recent git commits linked to agent sessions         |
+
+### Shell environment
+
+`AGENTMEMORY_URL=http://localhost:3111` is written to:
+- `~/.agentmemory/.env` (read by the MCP shim)
+- `~/.zshrc`, `~/.bashrc`, `~/.bash_profile` (whichever exist)
+
+### Proxy phase (inside `setup.sh`)
+
+1. Build `dist/cli.js` (`npm install && npm run build`).
+2. Write proxy config to `~/.ag-agentmemmory-proxy/proxy.env`.
+3. Spawn the proxy in the background; logs → `~/.ag-agentmemmory-proxy/agy-proxy.log`.
+4. Register the agentmemory daemon as a startup service and wait for `:3111` to become healthy.
+
+---
+
+## Project Layout
+
+```
+ag-agentmemory/
+├── setup.sh                # All-in-one: client wiring + agy proxy + daemon startup
+├── agy-clean-wrapper.sh    # Sanitizing wrapper around the agy CLI
+├── src/                    # agy-cli proxy source (TypeScript)
+└── dist/                   # Build output (cli.js, used by setup.sh)
+```
+
+Upstream: <https://github.com/rohitg00/agentmemory>
