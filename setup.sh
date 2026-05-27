@@ -263,6 +263,8 @@ setup_env() {
   upsert_env_var "CONSOLIDATION_ENABLED"     "true"                 "$env_file"
   upsert_env_var "GRAPH_EXTRACTION_ENABLED"  "true"                 "$env_file"
   upsert_env_var "AGENTMEMORY_INJECT_CONTEXT" "true"                "$env_file"
+  upsert_env_var "AGENTMEMORY_REFLECT"       "true"                 "$env_file"
+  upsert_env_var "TOKEN_BUDGET"              "2000"                 "$env_file"
 
   # Export for the current shell so downstream stages see it
   export AGENTMEMORY_URL="$AGENTMEMORY_URL_VAL"
@@ -284,6 +286,48 @@ setup_env() {
       ok "Added AGENTMEMORY_URL to $profile"
     fi
   done
+
+  # macOS GUI apps (Claude Code Desktop, Spotlight-launched Codex) don't read
+  # ~/.zshrc — they inherit env from the launchd user domain. Push the vars into
+  # launchctl for the current session, and register a LaunchAgent so they
+  # persist across reboots.
+  if [[ "${OSTYPE:-}" == darwin* ]] && command -v launchctl >/dev/null 2>&1; then
+    launchctl setenv AGENTMEMORY_URL            "$AGENTMEMORY_URL_VAL" || true
+    launchctl setenv OPENAI_BASE_URL            "$PROXY_BASE_URL"      || true
+    launchctl setenv OPENAI_API_KEY             "$PROXY_API_KEY"       || true
+    launchctl setenv OPENAI_MODEL               "$PROXY_MODEL"         || true
+    launchctl setenv AGENTMEMORY_AUTO_COMPRESS  "true"                 || true
+    launchctl setenv GRAPH_EXTRACTION_ENABLED   "true"                 || true
+    launchctl setenv AGENTMEMORY_INJECT_CONTEXT "true"                 || true
+    launchctl setenv AGENTMEMORY_REFLECT        "true"                 || true
+    launchctl setenv CONSOLIDATION_ENABLED      "true"                 || true
+    launchctl setenv TOKEN_BUDGET               "2000"                 || true
+    ok "launchctl setenv populated for current GUI session"
+
+    local setenv_label="com.agentmemory.setenv"
+    local setenv_plist="${HOME}/Library/LaunchAgents/${setenv_label}.plist"
+    mkdir -p "${HOME}/Library/LaunchAgents"
+    cat > "$setenv_plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>${setenv_label}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>/bin/launchctl setenv AGENTMEMORY_URL ${AGENTMEMORY_URL_VAL}; /bin/launchctl setenv OPENAI_BASE_URL ${PROXY_BASE_URL}; /bin/launchctl setenv OPENAI_API_KEY ${PROXY_API_KEY}; /bin/launchctl setenv OPENAI_MODEL ${PROXY_MODEL}; /bin/launchctl setenv AGENTMEMORY_AUTO_COMPRESS true; /bin/launchctl setenv GRAPH_EXTRACTION_ENABLED true; /bin/launchctl setenv AGENTMEMORY_INJECT_CONTEXT true; /bin/launchctl setenv AGENTMEMORY_REFLECT true; /bin/launchctl setenv CONSOLIDATION_ENABLED true; /bin/launchctl setenv TOKEN_BUDGET 2000; /bin/launchctl setenv TRANSFORMERS_CACHE \${HOME}/.cache/huggingface</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><false/>
+</dict>
+</plist>
+PLIST
+    launchctl unload "$setenv_plist" 2>/dev/null || true
+    launchctl load   "$setenv_plist"
+    ok "Persisted env via LaunchAgent: ${setenv_label}"
+  fi
 }
 
 # ─── Phase 2: Claude Code ─────────────────────────────────────────────────────
@@ -299,6 +343,34 @@ install_claude_code() {
   info "Wiring agentmemory MCP into Claude Code"
   agentmemory connect claude-code ${FORCE} 2>&1 | grep -v "^$" || true
 
+  # `agentmemory connect` writes `npx -y @agentmemory/mcp` + AGENTMEMORY_SECRET
+  # into the MCP block. On npm 11 / node 25 the npx install hits an "Invalid
+  # Version" bug in onnx-proto → protobufjs@6.11.6, so we rewrite the command
+  # to call the globally installed `agentmemory mcp` binary directly. The
+  # AGENTMEMORY_SECRET env is also unused for the local loopback daemon.
+  info "Sanitizing agentmemory MCP entry in ~/.claude.json"
+  local agentmemory_bin_path
+  agentmemory_bin_path="$(command -v agentmemory || true)"
+  node - "$agentmemory_bin_path" <<'NODE' || true
+(() => {
+  const fs = require('node:fs');
+  const bin = process.argv[2] || 'agentmemory';
+  const f = `${process.env.HOME}/.claude.json`;
+  let c;
+  try { c = JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return; }
+  const m = c.mcpServers?.agentmemory;
+  if (!m) return;
+  let changed = false;
+  if (m.env && 'AGENTMEMORY_SECRET' in m.env) { delete m.env.AGENTMEMORY_SECRET; changed = true; }
+  if (m.env && 'AGENTMEMORY_URL' in m.env && /\$\{?AGENTMEMORY_URL\}?/.test(m.env.AGENTMEMORY_URL)) {
+    m.env.AGENTMEMORY_URL = process.env.AGENTMEMORY_URL || 'http://localhost:3111';
+    changed = true;
+  }
+  if (m.command === 'npx') { m.command = bin; m.args = ['mcp']; changed = true; }
+  if (changed) fs.writeFileSync(f, JSON.stringify(c, null, 2) + '\n');
+})();
+NODE
+
   info "Merging 6 agentmemory hooks into ~/.claude/settings.json"
   # Real hook scripts shipped by the agentmemory plugin:
   #   session-start, prompt-submit, pre-tool-use, post-tool-use, pre-compact, stop
@@ -313,13 +385,31 @@ const config = {
   PostToolUse: [{ hooks: [{ type: "command", command: cmd("post-tool-use") }] }],
   PreCompact:  [{ hooks: [{ type: "command", command: cmd("pre-compact") }] }],
   Stop:        [{ hooks: [{ type: "command", command: cmd("stop") }] }],
+  SessionEnd:  [{ hooks: [{ type: "command", command: cmd("session-end") }] }],
 };
 process.stdout.write(JSON.stringify(config));
 NODE
 )"
   merge_claude_hooks "$hooks_json"
 
+  install_claude_code_skills
+  install_claude_code_instructions
+
   ok "Claude Code wired with 6 hooks (restart Claude Code to pick up changes)"
+}
+
+install_claude_code_instructions() {
+  local target="${HOME}/.claude/CLAUDE.md"
+  local source="${SCRIPT_DIR}/custom/claude-code/CLAUDE.md"
+  info "Instructions → $target (source: $source)"
+  [[ -f "$source" ]] || err "Missing instruction source: $source"
+  mkdir -p "$(dirname "$target")"
+  local content
+  content="$(cat "$source")"
+  upsert_block "$content" "$target" \
+    "<!-- AGENTMEMORY_RULES_START -->" \
+    "<!-- AGENTMEMORY_RULES_END -->"
+  ok "Claude Code instructions updated in $target"
 }
 
 # ─── Phase 3: Codex ───────────────────────────────────────────────────────────
@@ -334,205 +424,175 @@ install_codex() {
   info "Wiring agentmemory MCP into Codex"
   agentmemory connect codex ${FORCE} 2>&1 | grep -v "^$" || true
 
-  # Codex loads hooks via its plugin system. Register the agentmemory plugin
-  # directory as a local marketplace, then install the agentmemory plugin.
-  info "Registering agentmemory plugin marketplace: $plugin_root"
-  if codex plugin marketplace add "$plugin_root" 2>&1 | grep -v "^$"; then
-    info "Installing agentmemory plugin"
-    codex plugin add "agentmemory@agentmemory" 2>&1 | grep -v "^$" || \
-      warn "codex plugin add failed — open Codex TUI to install + trust the agentmemory plugin manually"
-  else
-    warn "codex plugin marketplace add failed — open Codex TUI to add the plugin manually:"
-    warn "  codex plugin marketplace add $plugin_root"
-    warn "  codex plugin add agentmemory@agentmemory"
+  # Same npx workaround as Claude — rewrite Codex MCP to call the agentmemory
+  # binary directly (see Phase 2 for context on the npm 11 / onnx-proto bug).
+  local codex_toml="${HOME}/.codex/config.toml"
+  local agentmemory_bin_path
+  agentmemory_bin_path="$(command -v agentmemory || echo agentmemory)"
+  if [[ -f "$codex_toml" ]] && grep -q '^\[mcp_servers.agentmemory\]' "$codex_toml"; then
+    info "Sanitizing agentmemory MCP entry in $codex_toml"
+    python3 - "$codex_toml" "$agentmemory_bin_path" <<'PY' || true
+import re, sys, pathlib
+path = pathlib.Path(sys.argv[1]); binp = sys.argv[2]
+text = path.read_text()
+def repl(m):
+    block = m.group(0)
+    block = re.sub(r'^command\s*=.*$', f'command = "{binp}"', block, count=1, flags=re.M)
+    block = re.sub(r'^args\s*=.*$',    'args = ["mcp"]',     block, count=1, flags=re.M)
+    return block
+# Match the [mcp_servers.agentmemory] section up to (but not including) the
+# next [section] header or end-of-file. Using [^\[]* breaks because `[` also
+# appears inside `args = ["mcp"]`, which truncates the match and causes
+# duplicated args on re-runs (args = ["mcp"]["mcp"]...).
+new = re.sub(r'(?ms)^\[mcp_servers\.agentmemory\].*?(?=^\[|\Z)', repl, text, count=1)
+if new != text:
+    path.write_text(new)
+PY
   fi
+
+  # Codex marketplaces require a `.agents/plugins/marketplace.json` listing
+  # plugin sub-paths. The agentmemory npm plugin is a single plugin folder,
+  # so we wrap it in a synthetic marketplace at ~/.agentmemory-marketplace
+  # that symlinks to the real plugin (so npm upgrades flow through).
+  local marketplace_name="agentmemory-marketplace"
+  local marketplace_root="${HOME}/.${marketplace_name}"
+  local marketplace_manifest="${marketplace_root}/.agents/plugins/marketplace.json"
+  local marketplace_plugin_link="${marketplace_root}/plugins/agentmemory"
+
+  info "Building Codex marketplace stub at: $marketplace_root"
+  mkdir -p "${marketplace_root}/.agents/plugins" "${marketplace_root}/plugins"
+
+  # Symlink (or replace) the plugin folder so upgrades to the npm package
+  # are picked up without rerunning setup.sh.
+  if [[ -L "$marketplace_plugin_link" || -e "$marketplace_plugin_link" ]]; then
+    rm -rf "$marketplace_plugin_link"
+  fi
+  ln -s "$plugin_root" "$marketplace_plugin_link"
+
+  cat > "$marketplace_manifest" <<JSON
+{
+  "name": "${marketplace_name}",
+  "interface": {
+    "displayName": "AgentMemory"
+  },
+  "plugins": [
+    {
+      "name": "agentmemory",
+      "source": {
+        "source": "local",
+        "path": "./plugins/agentmemory"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Memory"
+    }
+  ]
+}
+JSON
+
+  info "Registering marketplace with Codex"
+  # Remove any stale registration so re-runs don't conflict.
+  codex plugin marketplace remove "$marketplace_name" >/dev/null 2>&1 || true
+  if codex plugin marketplace add "$marketplace_root" 2>&1 | grep -v "^$"; then
+    info "Installing agentmemory@${marketplace_name}"
+    if codex plugin add "agentmemory@${marketplace_name}" 2>&1 | grep -v "^$"; then
+      ok "Codex plugin installed: agentmemory@${marketplace_name}"
+    else
+      warn "codex plugin add failed — open Codex TUI and run:"
+      warn "  codex plugin add agentmemory@${marketplace_name}"
+    fi
+  else
+    warn "codex plugin marketplace add failed. Manual recovery:"
+    warn "  codex plugin marketplace add ${marketplace_root}"
+    warn "  codex plugin add agentmemory@${marketplace_name}"
+  fi
+
+  install_codex_skills
+  install_codex_instructions
 
   ok "Codex MCP wired"
   warn "First TUI launch: Codex will prompt to trust the agentmemory plugin + its 6 hooks — accept all."
 }
 
+install_codex_instructions() {
+  local target="${HOME}/.codex/AGENTS.md"
+  local source="${SCRIPT_DIR}/custom/codex/AGENTS.md"
+  info "Instructions → $target (source: $source)"
+  [[ -f "$source" ]] || err "Missing instruction source: $source"
+  mkdir -p "$(dirname "$target")"
+  local content
+  content="$(cat "$source")"
+  upsert_block "$content" "$target" \
+    "<!-- AGENTMEMORY_RULES_START -->" \
+    "<!-- AGENTMEMORY_RULES_END -->"
+  ok "Codex instructions updated in $target"
+}
+
 # ─── Phase 4: Antigravity ─────────────────────────────────────────────────────
 
 install_antigravity_mcp() {
-  local target="${GEMINI_BASE}/antigravity/mcp_config.json"
-  info "MCP config → $target"
-  upsert_json_mcp "$target" "agentmemory" "npx" \
-    '["-y","@agentmemory/mcp"]' \
-    "{\"AGENTMEMORY_URL\":\"${AGENTMEMORY_URL_VAL}\",\"EMBEDDING_PROVIDER\":\"local\"}"
-  ok "Antigravity MCP config updated"
+  local agentmemory_bin_path
+  agentmemory_bin_path="$(command -v agentmemory || echo agentmemory)"
+
+  # Antigravity has used both the plugin mcp_config.json and the Gemini global
+  # settings.json mcpServers block. Keep both in sync so stale npx-based entries
+  # do not shadow the direct agentmemory binary entry.
+  local targets=(
+    "${GEMINI_BASE}/antigravity/mcp_config.json"
+    "${GEMINI_BASE}/settings.json"
+  )
+  local target
+  for target in "${targets[@]}"; do
+    info "MCP config → $target"
+    upsert_json_mcp "$target" "agentmemory" "$agentmemory_bin_path" \
+      '["mcp"]' \
+      "{\"AGENTMEMORY_URL\":\"${AGENTMEMORY_URL_VAL}\",\"EMBEDDING_PROVIDER\":\"local\"}"
+  done
+  ok "Antigravity MCP configs updated"
 }
 
 install_antigravity_instructions() {
   local target="${GEMINI_BASE}/GEMINI.md"
-  info "Instructions → $target"
-  local content='# AgentMemory
-
-Use AgentMemory for durable project memory across sessions.
-
-## Rules
-
-- Use `memory_smart_search` or `memory_recall` when past decisions, bugs, preferences, or architecture may matter.
-- Use `memory_save` for durable facts, decisions, preferences, workflow notes, and bug discoveries.
-- Use `memory_lesson_save` for reusable lessons.
-- Do not save secrets, API keys, tokens, passwords, or private credentials.
-- Keep saved memories concise and include relevant file paths when useful.
-
-## Proxy Configuration
-
-This setup uses local embeddings via the Antigravity CLI proxy:
-
-```env
-EMBEDDING_PROVIDER=local
-AGENTMEMORY_AUTO_COMPRESS=true
-CONSOLIDATION_ENABLED=true
-GRAPH_EXTRACTION_ENABLED=true
-OPENAI_BASE_URL=http://127.0.0.1:3129
-OPENAI_MODEL=agy-cli
-```
-
-API keys are optional — AgentMemory calls the local proxy, which forwards to the logged-in `agy` CLI.'
-
+  local source="${SCRIPT_DIR}/custom/antigravity/GEMINI.md"
+  info "Instructions → $target (source: $source)"
+  [[ -f "$source" ]] || err "Missing instruction source: $source"
+  local content
+  content="$(cat "$source")"
   upsert_block "$content" "$target" \
     "<!-- AGENTMEMORY_RULES_START -->" \
     "<!-- AGENTMEMORY_RULES_END -->"
   ok "Antigravity instructions updated in $target"
 }
 
-write_skill() {
-  local skill_dir="$1" name="$2"
-  shift 2
-  mkdir -p "$skill_dir/$name"
-  printf '%s\n' "$@" > "$skill_dir/$name/SKILL.md"
+copy_skills() {
+  local source="$1" target="$2" label="$3"
+  info "Skills → $target (source: $source)"
+  [[ -d "$source" ]] || err "Missing skills source dir: $source"
+  mkdir -p "$target"
+  local skill_path skill_name
+  for skill_path in "$source"/*/; do
+    [[ -d "$skill_path" ]] || continue
+    skill_name="$(basename "$skill_path")"
+    mkdir -p "$target/$skill_name"
+    cp -f "$skill_path"/* "$target/$skill_name/"
+  done
+  ok "${label} skills copied to $target"
 }
 
 install_antigravity_skills() {
-  local target="${GEMINI_BASE}/antigravity/skills"
-  info "Skills → $target"
-  mkdir -p "$target"
-
-  write_skill "$target" "recall" \
-    '---' \
-    'name: recall' \
-    'description: Search agentmemory for past observations, sessions, and learnings about a topic. Use when the user says "recall", "remember", "what did we do", or needs context from past sessions.' \
-    'argument-hint: "[search query]"' \
-    'user-invocable: true' \
-    '---' \
-    '' \
-    'The user wants to recall past context about: $ARGUMENTS' \
-    '' \
-    'Use `memory_smart_search` with the query as the `query` argument and `limit: 10`.' \
-    'Present results grouped by session — type, title, narrative. Highlight importance >= 7.' \
-    'If no results, suggest 2-3 alternative search terms. Do NOT fabricate observations.'
-
-  write_skill "$target" "remember" \
-    '---' \
-    'name: remember' \
-    'description: Explicitly save an insight, decision, or learning to agentmemory long-term storage. Use when the user says "remember this", "save this", or wants to preserve knowledge for future sessions.' \
-    'argument-hint: "[what to remember]"' \
-    'user-invocable: true' \
-    '---' \
-    '' \
-    'The user wants to save this to long-term memory: $ARGUMENTS' \
-    '' \
-    '1. Extract the core insight, decision, or fact.' \
-    '2. Extract 2-5 searchable `concepts` (lowercased keyword phrases).' \
-    '3. Extract any relevant `files` (absolute or repo-relative paths).' \
-    '4. Call `memory_save` with `content`, `concepts`, and `files`.' \
-    '5. Confirm to the user and show the concepts tagged.'
-
-  write_skill "$target" "forget" \
-    '---' \
-    'name: forget' \
-    'description: Delete specific observations or sessions from agentmemory. Use when user says "forget this", "delete memory", or wants to remove specific data.' \
-    'argument-hint: "[session ID, file path, or search term]"' \
-    'user-invocable: true' \
-    '---' \
-    '' \
-    'The user wants to remove data from agentmemory: $ARGUMENTS' \
-    '' \
-    'IMPORTANT: Always confirm with the user before deleting.' \
-    '1. Search with `memory_smart_search`, query from user input, limit 20.' \
-    '2. Show found items and ask for explicit confirmation.' \
-    '3. Once confirmed, call `memory_governance_delete` with `memoryIds: [...]`.' \
-    '4. Confirm deletion count back to the user.'
-
-  write_skill "$target" "handoff" \
-    '---' \
-    'name: handoff' \
-    'description: Resume the most recent agent session for the current project. Use when user says "where were we", "resume", "handoff", or starts with no fresh context.' \
-    'argument-hint: "[optional cwd override]"' \
-    'user-invocable: true' \
-    '---' \
-    '' \
-    'The user wants to resume work. Optional cwd override: $ARGUMENTS' \
-    '' \
-    '1. Call `memory_sessions` and find the most recent session matching the current working directory.' \
-    '2. If the session ended on an unanswered question, surface that first.' \
-    '3. Summarize the session: title, key files, key decisions, errors.' \
-    '4. Use `memory_recall` (limit 10) for supporting observations.' \
-    '5. End with a "next step?" pointer. Do not invent observations.'
-
-  write_skill "$target" "recap" \
-    '---' \
-    'name: recap' \
-    'description: Summarize recent agent sessions for the current project. Use when user asks "recap", "what have we been doing", "this week", "today".' \
-    'argument-hint: "[last N | today | this week]"' \
-    'user-invocable: true' \
-    '---' \
-    '' \
-    'The user wants a recap. Time window args: $ARGUMENTS' \
-    '' \
-    'Parse $ARGUMENTS: "today" = current date, "this week" = last 7 days, "last N" / bare number = N sessions, empty = last 10.' \
-    'Call `memory_sessions`, filter by cwd and time window, sort by startedAt descending.' \
-    'Group by date. For each session: id (8 chars), title, observation count, status.' \
-    'Use `memory_recall` (limit 3) for highlights (importance >= 7).' \
-    'End with totals: "N sessions across M days, K observations."'
-
-  write_skill "$target" "session-history" \
-    '---' \
-    'name: session-history' \
-    'description: Show recent sessions for this project. Use when user asks "what did we do last time", "session history", or "past sessions".' \
-    'user-invocable: true' \
-    '---' \
-    '' \
-    'Call `memory_sessions` with `limit: 20`. Present in reverse chronological order:' \
-    '- Session ID (8 chars), project, start time, status' \
-    '- Key highlights per session (type + title) for sessions with observations' \
-    '- Observation count and summary/title if available' \
-    'Do NOT fabricate sessions.'
-
-  write_skill "$target" "commit-context" \
-    '---' \
-    'name: commit-context' \
-    'description: Trace a file, function, or line back to the agent session that produced its current commit.' \
-    'argument-hint: "[file, function, or line]"' \
-    'user-invocable: true' \
-    '---' \
-    '' \
-    'The user wants commit context for: $ARGUMENTS' \
-    '' \
-    'Run `git blame` or `git log -L` on the target to get the commit SHA.' \
-    'Look up the linked session via `memory_commit_lookup` with `sha: "<full-sha>"` if available,' \
-    'or fall back to HTTP: GET $AGENTMEMORY_URL/agentmemory/session/by-commit?sha=<sha>.' \
-    'Present: commit SHA, branch, author, message, linked session(s), key observations (importance >= 7).' \
-    'Do not fabricate intent. Say plainly if no session is linked.'
-
-  write_skill "$target" "commit-history" \
-    '---' \
-    'name: commit-history' \
-    'description: List recent git commits linked to agent sessions. Use when user asks "show agent commits" or wants commits with session context.' \
-    'argument-hint: "[branch=... repo=... limit=...]"' \
-    'user-invocable: true' \
-    '---' \
-    '' \
-    'Parse $ARGUMENTS for optional branch=, repo=, limit= tokens. Defaults: no filter, limit 100.' \
-    'Call `memory_commits` with parsed filters, or fall back to HTTP:' \
-    'GET $AGENTMEMORY_URL/agentmemory/commits with URL-encoded query params.' \
-    'Render reverse-chronological: short SHA, branch, timestamp, commit message, linked session id(s).' \
-    'If empty, tell the user and suggest dropping filters. Do not invent commits.'
-
-  ok "Antigravity skills written to $target"
+  copy_skills "${SCRIPT_DIR}/custom/skills" "${GEMINI_BASE}/antigravity/skills" "Antigravity"
 }
+
+install_claude_code_skills() {
+  copy_skills "${SCRIPT_DIR}/custom/skills" "${HOME}/.claude/skills" "Claude Code"
+}
+
+install_codex_skills() {
+  copy_skills "${SCRIPT_DIR}/custom/skills" "${HOME}/.codex/skills" "Codex"
+}
+
 
 install_antigravity() {
   step "Antigravity: MCP + skills + instructions"
@@ -606,6 +666,10 @@ register_launchagent() {
     <key>CONSOLIDATION_ENABLED</key><string>true</string>
     <key>GRAPH_EXTRACTION_ENABLED</key><string>true</string>
     <key>AGENTMEMORY_INJECT_CONTEXT</key><string>true</string>
+    <key>AGENTMEMORY_DROP_STALE_INDEX</key><string>true</string>
+    <key>AGENTMEMORY_REFLECT</key><string>true</string>
+    <key>TOKEN_BUDGET</key><string>2000</string>
+    <key>TRANSFORMERS_CACHE</key><string>\${HOME}/.cache/huggingface</string>
   </dict>
   <key>WorkingDirectory</key><string>${HOME}</string>
   <key>RunAtLoad</key><true/>
@@ -656,6 +720,9 @@ set AGENTMEMORY_AUTO_COMPRESS=true
 set CONSOLIDATION_ENABLED=true
 set GRAPH_EXTRACTION_ENABLED=true
 set AGENTMEMORY_INJECT_CONTEXT=true
+set AGENTMEMORY_REFLECT=true
+set TOKEN_BUDGET=2000
+set AGENTMEMORY_DROP_STALE_INDEX=true
 "${win_bin}" >> "${log}" 2>&1
 BAT
   # Ensure CRLF line endings for Windows batch
@@ -702,6 +769,7 @@ setup_agentmemory_startup() {
     case "$OS" in
       mac)
         pkill -f "node.*agentmemory" 2>/dev/null || true
+        pkill -f "/.local/bin/iii" 2>/dev/null || true
         ;;
       win)
         taskkill.exe //F //IM node.exe //FI "WINDOWTITLE eq agentmemory*" 2>/dev/null || true
@@ -732,6 +800,7 @@ AGY_PROXY_PORT=${AGY_PORT}
 AGY_CLI_BIN=${AGY_BIN}
 AGY_CLI_TIMEOUT_MS=${AGY_TIMEOUT_MS}
 AGY_CLI_SANDBOX=${AGY_SANDBOX}
+AGY_PROXY_CONCURRENCY=1
 EOF
   ok "Updated $PROXY_ENV_FILE"
 }
@@ -753,42 +822,78 @@ proxy_healthy() {
   node -e "fetch('http://${AGY_HOST}:${AGY_PORT}/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 }
 
-start_proxy() {
-  step "Start agy OpenAI-compatible proxy"
-  mkdir -p "$PROXY_CONFIG_DIR"
+register_proxy_launchagent() {
+  local label="com.agy.proxy"
+  local plist="${HOME}/Library/LaunchAgents/${label}.plist"
+  local log_file="${PROXY_CONFIG_DIR}/agy-proxy.log"
+  local node_bin
+  node_bin="$(command -v node)" || err "node not found in PATH"
 
+  mkdir -p "${HOME}/Library/LaunchAgents" "$PROXY_CONFIG_DIR"
+
+  cat > "$plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>${label}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${node_bin}</string>
+    <string>${SCRIPT_DIR}/dist/cli.js</string>
+    <string>agy-proxy</string>
+    <string>--host</string><string>${AGY_HOST}</string>
+    <string>--port</string><string>${AGY_PORT}</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key><string>${HOME}</string>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:${HOME}/.local/bin</string>
+    <key>AGY_CLI_BIN</key><string>${AGY_BIN}</string>
+    <key>AGY_CLI_TIMEOUT_MS</key><string>${AGY_TIMEOUT_MS}</string>
+    <key>AGY_CLI_SANDBOX</key><string>${AGY_SANDBOX}</string>
+    <key>AGY_PROXY_CONCURRENCY</key><string>1</string>
+  </dict>
+  <key>WorkingDirectory</key><string>${SCRIPT_DIR}</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>${log_file}</string>
+  <key>StandardErrorPath</key><string>${log_file}</string>
+</dict>
+</plist>
+PLIST
+
+  launchctl unload "$plist" 2>/dev/null || true
+  launchctl load   "$plist"
+
+  ok "LaunchAgent registered: ${label}"
+  ok "Plist : ${plist}"
+  ok "Log   : ${log_file}"
+}
+
+start_proxy() {
+  step "Start agy OpenAI-compatible proxy (via LaunchAgent)"
   [[ -f "${SCRIPT_DIR}/dist/cli.js" ]] || err "dist/cli.js not found; run without --skip-build"
 
-  if proxy_healthy; then
-    ok "Proxy already healthy: http://${AGY_HOST}:${AGY_PORT}"
-    return 0
-  fi
+  # Kill any detached proxy from older setup.sh runs so the LaunchAgent owns 3129.
+  pkill -f "dist/cli.js agy-proxy" 2>/dev/null || true
 
-  export AGY_CLI_BIN="$AGY_BIN"
-  export AGY_CLI_TIMEOUT_MS="$AGY_TIMEOUT_MS"
-  export AGY_CLI_SANDBOX="$AGY_SANDBOX"
-
-  local log_file="${PROXY_CONFIG_DIR}/agy-proxy.log"
-  local pid
-  pid="$(node - "$log_file" "$SCRIPT_DIR/dist/cli.js" "$AGY_HOST" "$AGY_PORT" <<'NODE'
-const fs = require('node:fs');
-const path = require('node:path');
-const { spawn } = require('node:child_process');
-
-const [logFile, cliPath, host, port] = process.argv.slice(2);
-fs.mkdirSync(path.dirname(logFile), { recursive: true });
-const out = fs.openSync(logFile, 'a');
-const child = spawn(process.execPath, [cliPath, 'agy-proxy', '--host', host, '--port', port], {
-  detached: true,
-  stdio: ['ignore', out, out],
-  env: process.env,
-});
-child.unref();
-console.log(child.pid);
-NODE
-)"
-  [[ -n "$pid" ]] || err "Failed to spawn proxy process; check ${log_file}"
-  info "Started proxy process ${pid}"
+  case "$OS" in
+    mac)
+      register_proxy_launchagent
+      ;;
+    *)
+      warn "OS '${OS}' has no proxy auto-start support; falling back to detached spawn"
+      export AGY_CLI_BIN="$AGY_BIN"
+      export AGY_CLI_TIMEOUT_MS="$AGY_TIMEOUT_MS"
+      export AGY_CLI_SANDBOX="$AGY_SANDBOX"
+      export AGY_PROXY_CONCURRENCY=1
+      nohup node "${SCRIPT_DIR}/dist/cli.js" agy-proxy --host "$AGY_HOST" --port "$AGY_PORT" \
+        >> "${PROXY_CONFIG_DIR}/agy-proxy.log" 2>&1 &
+      disown || true
+      ;;
+  esac
 
   for _ in {1..15}; do
     if proxy_healthy; then
@@ -798,7 +903,7 @@ NODE
     sleep 1
   done
 
-  err "Proxy did not become healthy. Check ${log_file}"
+  err "Proxy did not become healthy. Check ${PROXY_CONFIG_DIR}/agy-proxy.log"
 }
 
 run_proxy() {
