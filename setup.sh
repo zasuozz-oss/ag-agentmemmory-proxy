@@ -265,6 +265,9 @@ setup_env() {
   upsert_env_var "AGENTMEMORY_INJECT_CONTEXT" "true"                "$env_file"
   upsert_env_var "AGENTMEMORY_REFLECT"       "true"                 "$env_file"
   upsert_env_var "TOKEN_BUDGET"              "2000"                 "$env_file"
+  # Raise LLM call timeout above default 60s so compress requests survive
+  # the agy-cli proxy peak latency without tripping the provider circuit breaker.
+  upsert_env_var "AGENTMEMORY_LLM_TIMEOUT_MS" "120000"              "$env_file"
 
   # Export for the current shell so downstream stages see it
   export AGENTMEMORY_URL="$AGENTMEMORY_URL_VAL"
@@ -302,6 +305,7 @@ setup_env() {
     launchctl setenv AGENTMEMORY_REFLECT        "true"                 || true
     launchctl setenv CONSOLIDATION_ENABLED      "true"                 || true
     launchctl setenv TOKEN_BUDGET               "2000"                 || true
+    launchctl setenv AGENTMEMORY_LLM_TIMEOUT_MS "120000"               || true
     ok "launchctl setenv populated for current GUI session"
 
     local setenv_label="com.agentmemory.setenv"
@@ -317,7 +321,7 @@ setup_env() {
   <array>
     <string>/bin/sh</string>
     <string>-c</string>
-    <string>/bin/launchctl setenv AGENTMEMORY_URL ${AGENTMEMORY_URL_VAL}; /bin/launchctl setenv OPENAI_BASE_URL ${PROXY_BASE_URL}; /bin/launchctl setenv OPENAI_API_KEY ${PROXY_API_KEY}; /bin/launchctl setenv OPENAI_MODEL ${PROXY_MODEL}; /bin/launchctl setenv AGENTMEMORY_AUTO_COMPRESS true; /bin/launchctl setenv GRAPH_EXTRACTION_ENABLED true; /bin/launchctl setenv AGENTMEMORY_INJECT_CONTEXT true; /bin/launchctl setenv AGENTMEMORY_REFLECT true; /bin/launchctl setenv CONSOLIDATION_ENABLED true; /bin/launchctl setenv TOKEN_BUDGET 2000; /bin/launchctl setenv TRANSFORMERS_CACHE \${HOME}/.cache/huggingface</string>
+    <string>/bin/launchctl setenv AGENTMEMORY_URL ${AGENTMEMORY_URL_VAL}; /bin/launchctl setenv OPENAI_BASE_URL ${PROXY_BASE_URL}; /bin/launchctl setenv OPENAI_API_KEY ${PROXY_API_KEY}; /bin/launchctl setenv OPENAI_MODEL ${PROXY_MODEL}; /bin/launchctl setenv AGENTMEMORY_AUTO_COMPRESS true; /bin/launchctl setenv GRAPH_EXTRACTION_ENABLED true; /bin/launchctl setenv AGENTMEMORY_INJECT_CONTEXT true; /bin/launchctl setenv AGENTMEMORY_REFLECT true; /bin/launchctl setenv CONSOLIDATION_ENABLED true; /bin/launchctl setenv TOKEN_BUDGET 2000; /bin/launchctl setenv AGENTMEMORY_LLM_TIMEOUT_MS 120000; /bin/launchctl setenv TRANSFORMERS_CACHE \${HOME}/.cache/huggingface</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><false/>
@@ -536,10 +540,13 @@ install_antigravity_mcp() {
   local agentmemory_bin_path
   agentmemory_bin_path="$(command -v agentmemory || echo agentmemory)"
 
-  # Antigravity has used both the plugin mcp_config.json and the Gemini global
-  # settings.json mcpServers block. Keep both in sync so stale npx-based entries
-  # do not shadow the direct agentmemory binary entry.
+  # Antigravity has moved its MCP config location across versions. Newer builds
+  # read ~/.gemini/config/mcp_config.json (see the ~/.gemini/config/.migrated
+  # marker); older ones used ~/.gemini/antigravity/mcp_config.json and the Gemini
+  # global settings.json mcpServers block. Keep all in sync so stale npx-based
+  # entries do not shadow the direct agentmemory binary entry.
   local targets=(
+    "${GEMINI_BASE}/config/mcp_config.json"
     "${GEMINI_BASE}/antigravity/mcp_config.json"
     "${GEMINI_BASE}/settings.json"
   )
@@ -669,6 +676,7 @@ register_launchagent() {
     <key>AGENTMEMORY_DROP_STALE_INDEX</key><string>true</string>
     <key>AGENTMEMORY_REFLECT</key><string>true</string>
     <key>TOKEN_BUDGET</key><string>2000</string>
+    <key>AGENTMEMORY_LLM_TIMEOUT_MS</key><string>120000</string>
     <key>TRANSFORMERS_CACHE</key><string>\${HOME}/.cache/huggingface</string>
   </dict>
   <key>WorkingDirectory</key><string>${HOME}</string>
@@ -722,6 +730,7 @@ set GRAPH_EXTRACTION_ENABLED=true
 set AGENTMEMORY_INJECT_CONTEXT=true
 set AGENTMEMORY_REFLECT=true
 set TOKEN_BUDGET=2000
+set AGENTMEMORY_LLM_TIMEOUT_MS=120000
 set AGENTMEMORY_DROP_STALE_INDEX=true
 "${win_bin}" >> "${log}" 2>&1
 BAT
@@ -800,7 +809,7 @@ AGY_PROXY_PORT=${AGY_PORT}
 AGY_CLI_BIN=${AGY_BIN}
 AGY_CLI_TIMEOUT_MS=${AGY_TIMEOUT_MS}
 AGY_CLI_SANDBOX=${AGY_SANDBOX}
-AGY_PROXY_CONCURRENCY=1
+AGY_PROXY_CONCURRENCY=4
 EOF
   ok "Updated $PROXY_ENV_FILE"
 }
@@ -852,7 +861,7 @@ register_proxy_launchagent() {
     <key>AGY_CLI_BIN</key><string>${AGY_BIN}</string>
     <key>AGY_CLI_TIMEOUT_MS</key><string>${AGY_TIMEOUT_MS}</string>
     <key>AGY_CLI_SANDBOX</key><string>${AGY_SANDBOX}</string>
-    <key>AGY_PROXY_CONCURRENCY</key><string>1</string>
+    <key>AGY_PROXY_CONCURRENCY</key><string>4</string>
   </dict>
   <key>WorkingDirectory</key><string>${SCRIPT_DIR}</string>
   <key>RunAtLoad</key><true/>
@@ -888,7 +897,7 @@ start_proxy() {
       export AGY_CLI_BIN="$AGY_BIN"
       export AGY_CLI_TIMEOUT_MS="$AGY_TIMEOUT_MS"
       export AGY_CLI_SANDBOX="$AGY_SANDBOX"
-      export AGY_PROXY_CONCURRENCY=1
+      export AGY_PROXY_CONCURRENCY=4
       nohup node "${SCRIPT_DIR}/dist/cli.js" agy-proxy --host "$AGY_HOST" --port "$AGY_PORT" \
         >> "${PROXY_CONFIG_DIR}/agy-proxy.log" 2>&1 &
       disown || true
