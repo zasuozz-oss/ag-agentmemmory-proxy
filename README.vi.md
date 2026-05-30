@@ -1,4 +1,4 @@
-# ag-agentmemory
+# ag-agentmemmory-proxy
 
 [English](README.md) · [Tiếng Việt](README.vi.md)
 
@@ -138,7 +138,7 @@ Sau đó xoá các entry `agentmemory` (và block `<!-- AGENTMEMORY_RULES_START/
 
 AgentMemory là daemon memory bền vững cho các AI coding agent. Wire thủ công trên nhiều tool rất tốn công và dễ sai — mỗi client có format config khác nhau (JSON / TOML / skill file), hệ thống hook khác, mô hình startup khác.
 
-`ag-agentmemory` tự động hóa toàn bộ setup trong một lệnh:
+`ag-agentmemmory-proxy` tự động hóa toàn bộ setup trong một lệnh:
 
 - Kết nối AgentMemory thành **MCP server** trong Claude Code, Codex và Antigravity.
 - Cài **hooks** để daemon tự khởi động cùng session.
@@ -229,7 +229,7 @@ Hỗ trợ **macOS** và **Windows** (Git Bash / MSYS2).
 ## Cấu trúc dự án
 
 ```
-ag-agentmemory/
+ag-agentmemmory-proxy/
 ├── setup.sh                # All-in-one: client wiring + agy proxy + startup daemon
 ├── agy-clean-wrapper.sh    # Wrapper sanitize cho agy CLI
 ├── src/                    # Source agy-cli proxy (TypeScript)

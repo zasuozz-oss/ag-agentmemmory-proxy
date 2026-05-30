@@ -1,4 +1,4 @@
-# ag-agentmemory
+# ag-agentmemmory-proxy
 
 [English](README.md) · [Tiếng Việt](README.vi.md)
 
@@ -138,7 +138,7 @@ Then remove the `agentmemory` entries (and the `<!-- AGENTMEMORY_RULES_START/END
 
 AgentMemory is a persistent memory daemon for AI coding agents. Wiring it manually across multiple tools is tedious and error-prone — each client has a different config format (JSON / TOML / skill files), different hook system, and different startup model.
 
-`ag-agentmemory` automates the entire setup in one command:
+`ag-agentmemmory-proxy` automates the entire setup in one command:
 
 - Connects AgentMemory as an **MCP server** in Claude Code, Codex, and Antigravity.
 - Installs **hooks** so the daemon auto-starts with each session.
@@ -229,7 +229,7 @@ Supported on **macOS** and **Windows** (Git Bash / MSYS2).
 ## Project Layout
 
 ```
-ag-agentmemory/
+ag-agentmemmory-proxy/
 ├── setup.sh                # All-in-one: client wiring + agy proxy + daemon startup
 ├── agy-clean-wrapper.sh    # Sanitizing wrapper around the agy CLI
 ├── src/                    # agy-cli proxy source (TypeScript)
