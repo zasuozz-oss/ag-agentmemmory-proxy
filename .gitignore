@@ -25,3 +25,6 @@ docs/superpowers/
 
 # Claude Code session permissions (project-specific, not for sharing)
 .claude
+
+# Data
+data/
