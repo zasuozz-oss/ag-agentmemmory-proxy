@@ -204,14 +204,16 @@ install_binary() {
   stop_running
   sleep 1
 
-  # Clear a previous read-only lock so we can overwrite. No backup of the old
-  # binary is kept — the vendor cache already holds the pinned installer.
-  if [ -f "$INSTALL_PATH" ]; then
-    if [ "$OSKIND" = "windows" ]; then
-      attrib.exe -R "$(cygpath -w "$INSTALL_PATH" 2>/dev/null || echo "$INSTALL_PATH")" >/dev/null 2>&1 || true
-    else
-      chmod u+w "$INSTALL_PATH" 2>/dev/null || true
-    fi
+  # Clear a previous lock so we can overwrite. No backup of the old binary is
+  # kept — the vendor cache already holds the pinned installer.
+  if [ "$OSKIND" = "windows" ]; then
+    # Re-enable inheritance on the bin dir; this restores write/create/delete so
+    # the copy below (and any prior ACL lock from lock_updater) doesn't block us.
+    MSYS_NO_PATHCONV=1 icacls.exe "$(cygpath -w "$INSTALL_DIR")" /reset >/dev/null 2>&1 || true
+    [ -f "$INSTALL_PATH" ] \
+      && attrib.exe -R "$(cygpath -w "$INSTALL_PATH" 2>/dev/null || echo "$INSTALL_PATH")" >/dev/null 2>&1 || true
+  elif [ -f "$INSTALL_PATH" ]; then
+    chmod u+w "$INSTALL_PATH" 2>/dev/null || true
   fi
 
   if [ "$IS_TARGZ" = true ]; then
@@ -229,6 +231,8 @@ install_binary() {
   fi
 
   [ "$OSKIND" = "windows" ] || chmod +x "$INSTALL_PATH"
+  # Drop the self-updater's leftover backups (agy.exe.<id>.old, ~137M each).
+  rm -f "$INSTALL_DIR"/agy.exe.*.old "$INSTALL_DIR"/agy.*.old 2>/dev/null || true
   ok "Installed agy $VERSION → $INSTALL_PATH"
 }
 
@@ -254,17 +258,28 @@ installed_version() {
 
 # ---------------------------------------------------------------------------
 # Lock the self-updater so it can't replace the pinned binary.
-#   Windows: persistent user env var + read-only attribute.
+#   Windows: persistent user env var + ACL lock on the bin dir.
 #   Unix:    shell-rc export + read-only mode bits (kept executable).
+#
+# Why an ACL lock (not `attrib +R`): agy's self-updater does not open the
+# binary for writing — it RENAMES agy.exe → agy.exe.<id>.old and drops a fresh
+# agy.exe. A read-only file attribute blocks write-open but not rename/create,
+# so it was bypassed every time. Stripping inheritance and granting the user
+# only (RX) removes write/create/delete on the directory itself, which is what
+# actually stops the rename. install_binary() runs `icacls /reset` first to
+# unlock before reinstalling.
 # ---------------------------------------------------------------------------
 lock_updater() {
   if [ "$OSKIND" = "windows" ]; then
     cmd.exe //c "setx AGY_CLI_DISABLE_AUTO_UPDATE 1" >/dev/null 2>&1 \
       && ok "Set user env var AGY_CLI_DISABLE_AUTO_UPDATE=1" \
       || warn "Could not set persistent env var (setx)"
-    attrib.exe +R "$(cygpath -w "$INSTALL_PATH" 2>/dev/null || echo "$INSTALL_PATH")" >/dev/null 2>&1 \
-      && ok "Marked agy.exe read-only (updater cannot overwrite)" \
-      || warn "Could not set read-only attribute"
+    local wuser
+    wuser="$(cmd.exe //c "echo %USERDOMAIN%\\%USERNAME%" 2>/dev/null | tr -d '\r\n')"
+    MSYS_NO_PATHCONV=1 icacls.exe "$(cygpath -w "$INSTALL_DIR")" \
+      /inheritance:r /grant "${wuser}:(OI)(CI)(RX)" >/dev/null 2>&1 \
+      && ok "Locked $INSTALL_DIR read-only via ACL (rename-proof — blocks self-updater)" \
+      || warn "Could not apply ACL lock (icacls)"
   else
     local marker="export AGY_CLI_DISABLE_AUTO_UPDATE=1"
     local rc
