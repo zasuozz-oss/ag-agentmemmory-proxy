@@ -28,3 +28,6 @@ docs/superpowers/
 
 # Data
 data/
+
+# Vendored agy installers (large binaries, fetched by install-agy.sh)
+vendor/

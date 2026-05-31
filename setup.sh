@@ -837,6 +837,11 @@ register_task_scheduler() {
 
   cat > "$bat" <<BAT
 @echo off
+REM iii-config.yaml stores the DB at the RELATIVE path ./data/state_store.db, so
+REM the daemon's working directory decides where the database lives. Pin it to
+REM %USERPROFILE% (mirrors the macOS LaunchAgent WorkingDirectory) so the DB is
+REM always ~/data and survives every restart, regardless of how the task fires.
+cd /d "%USERPROFILE%"
 set PATH=%USERPROFILE%\.local\bin;%PATH%
 set AGENTMEMORY_URL=${AGENTMEMORY_URL_VAL}
 set OPENAI_BASE_URL=${PROXY_BASE_URL}
@@ -913,15 +918,20 @@ ensure_iii_engine() {
 # ~/.local/bin is prepended so the daemon finds the iii-engine binary.
 start_agentmemory_now() {
   local log="${PROXY_CONFIG_DIR}/agentmemory.log"
-  PATH="${HOME}/.local/bin:$PATH" \
-  AGENTMEMORY_URL="$AGENTMEMORY_URL_VAL" \
-  OPENAI_BASE_URL="$PROXY_BASE_URL" OPENAI_API_KEY="$PROXY_API_KEY" OPENAI_MODEL="$PROXY_MODEL" \
-  EMBEDDING_PROVIDER="local" AGENTMEMORY_AUTO_COMPRESS="true" CONSOLIDATION_ENABLED="true" \
-  GRAPH_EXTRACTION_ENABLED="true" AGENTMEMORY_INJECT_CONTEXT="true" AGENTMEMORY_REFLECT="true" \
-  TOKEN_BUDGET="2000" AGENTMEMORY_LLM_TIMEOUT_MS="120000" AGENTMEMORY_DROP_STALE_INDEX="true" \
-    nohup "$AGENTMEMORY_BIN" >> "$log" 2>&1 &
+  # Run from $HOME so the iii-engine relative DB path (./data/state_store.db)
+  # resolves to ~/data — the same location the scheduled .bat uses. Without this
+  # the detached daemon would write its DB under whatever directory setup.sh was
+  # invoked from, diverging from the logon-task DB.
+  ( cd "$HOME" && \
+    PATH="${HOME}/.local/bin:$PATH" \
+    AGENTMEMORY_URL="$AGENTMEMORY_URL_VAL" \
+    OPENAI_BASE_URL="$PROXY_BASE_URL" OPENAI_API_KEY="$PROXY_API_KEY" OPENAI_MODEL="$PROXY_MODEL" \
+    EMBEDDING_PROVIDER="local" AGENTMEMORY_AUTO_COMPRESS="true" CONSOLIDATION_ENABLED="true" \
+    GRAPH_EXTRACTION_ENABLED="true" AGENTMEMORY_INJECT_CONTEXT="true" AGENTMEMORY_REFLECT="true" \
+    TOKEN_BUDGET="2000" AGENTMEMORY_LLM_TIMEOUT_MS="120000" AGENTMEMORY_DROP_STALE_INDEX="true" \
+      nohup "$AGENTMEMORY_BIN" >> "$log" 2>&1 & )
   disown || true
-  info "Started agentmemory (detached) — log: ${log}"
+  info "Started agentmemory (detached, cwd=\$HOME) — log: ${log}"
 }
 
 setup_agentmemory_startup() {
@@ -995,6 +1005,7 @@ AGY_CLI_BIN=${agy_cli_bin}
 AGY_CLI_TIMEOUT_MS=${AGY_TIMEOUT_MS}
 AGY_CLI_SANDBOX=${AGY_SANDBOX}
 AGY_PROXY_CONCURRENCY=4
+AGY_CLI_DISABLE_AUTO_UPDATE=1
 EOF
   ok "Updated $PROXY_ENV_FILE"
 }
@@ -1085,6 +1096,9 @@ register_proxy_task_scheduler() {
 
   cat > "$bat" <<BAT
 @echo off
+REM Pin agy: block its self-updater so a background bump (e.g. 1.0.0 -> 1.0.3)
+REM cannot silently break print-mode login out from under the proxy.
+set AGY_CLI_DISABLE_AUTO_UPDATE=1
 set AGY_CLI_BIN=${win_agy}
 set AGY_CLI_TIMEOUT_MS=${AGY_TIMEOUT_MS}
 set AGY_CLI_SANDBOX=${AGY_SANDBOX}
@@ -1099,7 +1113,8 @@ BAT
     warn "Task Scheduler ONLOGON needs elevation; using Startup folder + detached spawn."
     install_startup_folder_launcher "AgyProxy" "$win_bat"
     export AGY_CLI_BIN="$AGY_BIN_WIN" AGY_CLI_TIMEOUT_MS="$AGY_TIMEOUT_MS" \
-           AGY_CLI_SANDBOX="$AGY_SANDBOX" AGY_PROXY_CONCURRENCY=4
+           AGY_CLI_SANDBOX="$AGY_SANDBOX" AGY_PROXY_CONCURRENCY=4 \
+           AGY_CLI_DISABLE_AUTO_UPDATE=1
     nohup node "${SCRIPT_DIR}/dist/cli.js" agy-proxy --host "$AGY_HOST" --port "$AGY_PORT" \
       >> "$log_file" 2>&1 &
     disown || true
