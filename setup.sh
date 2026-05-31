@@ -1163,12 +1163,14 @@ for (const sub of ['brain', 'conversations']) {
 console.log(`[${new Date().toISOString()}] agy-brain-cleanup: removed ${removed} stale entr${removed === 1 ? 'y' : 'ies'} (ttl ${ttlMin}m)`);
 CJS
 
-  local win_node win_cjs win_log bat win_bat
+  local win_node win_cjs win_log bat win_bat vbs win_vbs
   win_node="$(cygpath -w "$node_bin" 2>/dev/null || echo "$node_bin")"
   win_cjs="$(cygpath -w "$cjs" 2>/dev/null || echo "$cjs")"
   win_log="$(cygpath -w "$log_file" 2>/dev/null || echo "$log_file")"
   bat="${PROXY_CONFIG_DIR}/agy-brain-cleanup.bat"
   win_bat="$(cygpath -w "$bat" 2>/dev/null || echo "$bat")"
+  vbs="${PROXY_CONFIG_DIR}/agy-brain-cleanup.vbs"
+  win_vbs="$(cygpath -w "$vbs" 2>/dev/null || echo "$vbs")"
 
   cat > "$bat" <<BAT
 @echo off
@@ -1177,10 +1179,19 @@ set AGY_BRAIN_TTL_MIN=${AGY_BRAIN_TTL_MIN}
 BAT
   if command -v unix2dos >/dev/null 2>&1; then unix2dos "$bat" >/dev/null 2>&1 || true; fi
 
+  # Run the cleanup bat through a hidden VBS launcher (window style 0) so the
+  # scheduled task does not flash a cmd window every interval while the user is
+  # logged on interactively.
+  cat > "$vbs" <<VBS
+Set s = CreateObject("WScript.Shell")
+s.Run "cmd /c ""${win_bat}""", 0, False
+VBS
+  if command -v unix2dos >/dev/null 2>&1; then unix2dos "$vbs" >/dev/null 2>&1 || true; fi
+
   schtasks_win /Delete /TN "$task_name" /F 2>/dev/null || true
   # /SC MINUTE tasks for the current user do not need elevation.
   if ! schtasks_win /Create /F /TN "$task_name" /SC MINUTE /MO "$AGY_BRAIN_CLEANUP_EVERY_MIN" \
-       /TR "cmd.exe /c \"${win_bat}\"" 2>/dev/null; then
+       /TR "wscript.exe \"${win_vbs}\"" 2>/dev/null; then
     warn "Could not register brain-cleanup task '${task_name}' (admin rights?). Skipping."
     return 0
   fi
