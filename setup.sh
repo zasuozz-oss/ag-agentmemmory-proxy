@@ -341,8 +341,14 @@ setup_env() {
 
   # macOS GUI apps (Claude Code Desktop, Spotlight-launched Codex) don't read
   # ~/.zshrc — they inherit env from the launchd user domain. Push the vars into
-  # launchctl for the current session, and register a LaunchAgent so they
-  # persist across reboots.
+  # launchctl for the current session as a convenience. We deliberately do NOT
+  # register a separate persistence LaunchAgent for these: every config that
+  # actually needs them already carries its own value (the agentmemory MCP server
+  # hardcodes AGENTMEMORY_URL in ~/.claude.json, the hooks default to
+  # http://localhost:3111, and the daemon/proxy plists set their own
+  # EnvironmentVariables). The old com.agentmemory.setenv agent was unsigned, so
+  # macOS fired a "Background Items Added" notification on every (re)registration
+  # for zero functional gain — dropped.
   if [[ "${OSTYPE:-}" == darwin* ]] && command -v launchctl >/dev/null 2>&1; then
     launchctl setenv AGENTMEMORY_URL            "$AGENTMEMORY_URL_VAL" || true
     launchctl setenv OPENAI_BASE_URL            "$PROXY_BASE_URL"      || true
@@ -357,29 +363,13 @@ setup_env() {
     launchctl setenv AGENTMEMORY_LLM_TIMEOUT_MS "120000"               || true
     ok "launchctl setenv populated for current GUI session"
 
-    local setenv_label="com.agentmemory.setenv"
-    local setenv_plist="${HOME}/Library/LaunchAgents/${setenv_label}.plist"
-    mkdir -p "${HOME}/Library/LaunchAgents"
-    cat > "$setenv_plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>${setenv_label}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/bin/sh</string>
-    <string>-c</string>
-    <string>/bin/launchctl setenv AGENTMEMORY_URL ${AGENTMEMORY_URL_VAL}; /bin/launchctl setenv OPENAI_BASE_URL ${PROXY_BASE_URL}; /bin/launchctl setenv OPENAI_API_KEY ${PROXY_API_KEY}; /bin/launchctl setenv OPENAI_MODEL ${PROXY_MODEL}; /bin/launchctl setenv AGENTMEMORY_AUTO_COMPRESS true; /bin/launchctl setenv GRAPH_EXTRACTION_ENABLED true; /bin/launchctl setenv AGENTMEMORY_INJECT_CONTEXT true; /bin/launchctl setenv AGENTMEMORY_REFLECT true; /bin/launchctl setenv CONSOLIDATION_ENABLED true; /bin/launchctl setenv TOKEN_BUDGET 2000; /bin/launchctl setenv AGENTMEMORY_LLM_TIMEOUT_MS 120000; /bin/launchctl setenv TRANSFORMERS_CACHE \${HOME}/.cache/huggingface</string>
-  </array>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><false/>
-</dict>
-</plist>
-PLIST
-    launchctl unload "$setenv_plist" 2>/dev/null || true
-    launchctl load   "$setenv_plist"
-    ok "Persisted env via LaunchAgent: ${setenv_label}"
+    # Tear down the legacy persistence agent if a prior install left it behind.
+    local legacy_setenv_plist="${HOME}/Library/LaunchAgents/com.agentmemory.setenv.plist"
+    if [[ -f "$legacy_setenv_plist" ]]; then
+      launchctl unload "$legacy_setenv_plist" 2>/dev/null || true
+      rm -f "$legacy_setenv_plist"
+      ok "Removed legacy LaunchAgent: com.agentmemory.setenv"
+    fi
   fi
 }
 
@@ -776,6 +766,25 @@ agentmemory_healthy() {
   node -e "fetch('http://localhost:3111/agentmemory/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 }
 
+# Reload a LaunchAgent only when its plist actually changed. These agents are
+# unsigned, and macOS fires a fresh "Background Items Added" notification on every
+# (re)registration of an unsigned item -- so unconditionally rewriting + unload/
+# load on each setup run spammed one notification per agent per run (BTM showed
+# Generation 17 on com.agentmemory.setenv). Callers render the plist to
+# "${plist}.new"; if it matches the installed copy and the agent is already
+# loaded, skip the reload entirely so no notification is generated.
+reload_launchagent_if_changed() {
+  local plist="$1" label="$2"
+  if [[ -f "$plist" ]] && cmp -s "${plist}.new" "$plist" \
+     && launchctl list "$label" >/dev/null 2>&1; then
+    rm -f "${plist}.new"
+    return 0
+  fi
+  mv -f "${plist}.new" "$plist"
+  launchctl unload "$plist" 2>/dev/null || true
+  launchctl load   "$plist"
+}
+
 # macOS: register as LaunchAgent (runs at login, auto-restarts on crash)
 register_launchagent() {
   local label="com.agentmemory"
@@ -784,7 +793,7 @@ register_launchagent() {
 
   mkdir -p "${HOME}/Library/LaunchAgents" "$PROXY_CONFIG_DIR"
 
-  cat > "$plist" <<PLIST
+  cat > "${plist}.new" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -823,8 +832,7 @@ register_launchagent() {
 </plist>
 PLIST
 
-  launchctl unload "$plist" 2>/dev/null || true
-  launchctl load "$plist"
+  reload_launchagent_if_changed "$plist" "$label"
 
   ok "LaunchAgent registered: ${label}"
   ok "Plist : ${plist}"
@@ -1056,7 +1064,7 @@ register_proxy_launchagent() {
 
   mkdir -p "${HOME}/Library/LaunchAgents" "$PROXY_CONFIG_DIR"
 
-  cat > "$plist" <<PLIST
+  cat > "${plist}.new" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -1094,8 +1102,7 @@ register_proxy_launchagent() {
 </plist>
 PLIST
 
-  launchctl unload "$plist" 2>/dev/null || true
-  launchctl load   "$plist"
+  reload_launchagent_if_changed "$plist" "$label"
 
   ok "LaunchAgent registered: ${label}"
   ok "Plist : ${plist}"
