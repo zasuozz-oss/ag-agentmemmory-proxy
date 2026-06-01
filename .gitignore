@@ -26,8 +26,10 @@ docs/superpowers/
 # Claude Code session permissions (project-specific, not for sharing)
 .claude
 
-# Data
+# Data (DB lives in ~/data; repo `data` is a machine-local symlink to it)
 data/
+/data
+data.bak-*
 
 # Vendored agy installers (large binaries, fetched by install-agy.sh)
 vendor/

@@ -1059,7 +1059,12 @@ register_proxy_launchagent() {
     <key>AGY_CLI_SANDBOX</key><string>${AGY_SANDBOX}</string>
     <key>AGY_PROXY_CONCURRENCY</key><string>4</string>
   </dict>
-  <key>WorkingDirectory</key><string>${SCRIPT_DIR}</string>
+  <!-- Pin cwd to \$HOME (mirrors com.agentmemory). The iii-engine DB path in
+       iii-config.yaml is RELATIVE (./data/state_store.db), so any agentmemory
+       daemon spawned with this cwd would write its DB under the repo instead of
+       ~/data — splitting the database. ProgramArguments and AGY_CLI_BIN are
+       absolute, so the proxy needs nothing from the repo cwd. -->
+  <key>WorkingDirectory</key><string>${HOME}</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>

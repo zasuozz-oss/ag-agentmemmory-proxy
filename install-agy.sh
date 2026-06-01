@@ -213,6 +213,9 @@ install_binary() {
     [ -f "$INSTALL_PATH" ] \
       && attrib.exe -R "$(cygpath -w "$INSTALL_PATH" 2>/dev/null || echo "$INSTALL_PATH")" >/dev/null 2>&1 || true
   elif [ -f "$INSTALL_PATH" ]; then
+    # Clear the immutable flag set by lock_updater (uchg blocks unlink/rename/write),
+    # then restore owner-write so the cp below can overwrite the pinned binary.
+    chflags nouchg "$INSTALL_PATH" 2>/dev/null || true
     chmod u+w "$INSTALL_PATH" 2>/dev/null || true
   fi
 
@@ -290,10 +293,20 @@ lock_updater() {
         ok "Added AGY_CLI_DISABLE_AUTO_UPDATE=1 to ${rc##*/}"
       fi
     done
-    # 0555 = r-x for all, no write → updater cannot overwrite, still executable.
+    # 0555 = r-x for all, no write → updater cannot write in place, still executable.
     chmod 0555 "$INSTALL_PATH" 2>/dev/null \
       && ok "Marked agy read-only (chmod 0555)" \
       || warn "Could not chmod the binary read-only"
+    # chmod alone is NOT enough: ~/.local/bin is user-writable, and agy's
+    # self-updater replaces the binary by rename (unlink old + drop new), which a
+    # read-only file mode does not block. The macOS user-immutable flag (uchg)
+    # blocks unlink/rename/write of the file itself, so the updater's swap fails
+    # and the pinned 1.0.0 survives. (Mirrors the Windows ACL lock above.)
+    if chflags uchg "$INSTALL_PATH" 2>/dev/null; then
+      ok "Locked agy immutable (chflags uchg — rename-proof, blocks self-updater)"
+    else
+      warn "Could not set immutable flag (chflags uchg); self-updater may overwrite agy"
+    fi
   fi
 }
 
