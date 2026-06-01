@@ -387,10 +387,23 @@ PLIST
 
 install_claude_code() {
   step "Claude Code: MCP + 6 agentmemory hooks"
-  require_command claude
+
+  # Skills + instructions only need SCRIPT_DIR/custom, not the claude CLI or the
+  # global plugin. Copy them first so a missing CLI / plugin can never block
+  # skill installation (it previously err-exited the whole setup before this).
+  install_claude_code_skills
+  install_claude_code_instructions
+
+  if ! command -v claude >/dev/null 2>&1; then
+    warn "claude CLI not found in PATH — skipped MCP + hook wiring (skills + instructions still installed)"
+    return 0
+  fi
 
   local plugin_root
-  plugin_root="$(agentmemory_plugin_root)" || err "agentmemory plugin not found — install @agentmemory/agentmemory globally"
+  plugin_root="$(agentmemory_plugin_root)" || {
+    warn "agentmemory plugin not found — skipped hook wiring (skills + instructions still installed). Install @agentmemory/agentmemory globally."
+    return 0
+  }
   info "Plugin root: $plugin_root"
 
   info "Wiring agentmemory MCP into Claude Code"
@@ -445,9 +458,6 @@ NODE
 )"
   merge_claude_hooks "$hooks_json"
 
-  install_claude_code_skills
-  install_claude_code_instructions
-
   ok "Claude Code wired with 6 hooks (restart Claude Code to pick up changes)"
 }
 
@@ -469,10 +479,23 @@ install_claude_code_instructions() {
 
 install_codex() {
   step "Codex: MCP + plugin (6 hooks via Codex plugin system)"
-  require_command codex
+
+  # Skills + instructions only need SCRIPT_DIR/custom, not the codex CLI or the
+  # global plugin. Copy them first so a missing CLI / plugin can never block
+  # skill installation (it previously err-exited the whole setup before this).
+  install_codex_skills
+  install_codex_instructions
+
+  if ! command -v codex >/dev/null 2>&1; then
+    warn "codex CLI not found in PATH — skipped MCP wiring (skills + instructions still installed)"
+    return 0
+  fi
 
   local plugin_root
-  plugin_root="$(agentmemory_plugin_root)" || err "agentmemory plugin not found — install @agentmemory/agentmemory globally"
+  plugin_root="$(agentmemory_plugin_root)" || {
+    warn "agentmemory plugin not found — skipped MCP wiring (skills + instructions still installed). Install @agentmemory/agentmemory globally."
+    return 0
+  }
 
   info "Wiring agentmemory MCP into Codex"
   agentmemory connect codex ${FORCE} 2>&1 | grep -v "^$" || true
@@ -613,9 +636,6 @@ fs.writeFileSync(target, text);
 NODE
     ok "Codex config: added [plugins.\"agentmemory@agentmemory-marketplace\"] enabled = true"
   fi
-
-  install_codex_skills
-  install_codex_instructions
 
   ok "Codex MCP wired"
   warn "First TUI launch: Codex will prompt to trust the agentmemory plugin + its 6 hooks — accept all."
