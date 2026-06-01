@@ -49,7 +49,14 @@ async function runAgyPromptNow(prompt, options) {
     args.push(prompt);
     return new Promise((resolve, reject) => {
         const cwd = process.env.AGY_PROXY_WORKDIR || (process.platform === 'win32' ? os.tmpdir() : '/private/tmp');
-        const child = spawn(agyBin, args, { stdio: ['ignore', 'pipe', 'pipe'], cwd });
+        const child = spawn(agyBin, args, {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            cwd,
+            env: {
+                ...process.env,
+                AGY_CLI_DISABLE_AUTO_UPDATE: '1',
+            },
+        });
         let stdout = '';
         let stderr = '';
         const timer = setTimeout(() => {

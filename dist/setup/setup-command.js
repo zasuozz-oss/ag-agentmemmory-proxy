@@ -15,7 +15,7 @@ export async function runSetup(options) {
             `proxy env: ${envPath}`,
             `proxy: http://${config.host}:${config.port}`,
             `agy bin: ${config.agyBin}`,
-            `start: AGY_CLI_BIN=${config.agyBin} AGY_CLI_TIMEOUT_MS=${config.timeoutMs} AGY_CLI_SANDBOX=${config.sandbox} node dist/cli.js agy-proxy --host ${config.host} --port ${config.port}`,
+            `start: AGY_CLI_BIN=${config.agyBin} AGY_CLI_TIMEOUT_MS=${config.timeoutMs} AGY_CLI_SANDBOX=${config.sandbox} AGY_CLI_DISABLE_AUTO_UPDATE=${config.disableAutoUpdate} node dist/cli.js agy-proxy --host ${config.host} --port ${config.port}`,
         ],
     };
 }

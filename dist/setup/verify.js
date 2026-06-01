@@ -11,7 +11,7 @@ function checkNode() {
 async function checkProxyConfig() {
     const configPath = defaultProxyConfigPath();
     const values = await readProxyEnv(configPath);
-    const required = ['AGY_PROXY_HOST', 'AGY_PROXY_PORT', 'AGY_CLI_BIN', 'AGY_CLI_TIMEOUT_MS', 'AGY_CLI_SANDBOX'];
+    const required = ['AGY_PROXY_HOST', 'AGY_PROXY_PORT', 'AGY_CLI_BIN', 'AGY_CLI_TIMEOUT_MS', 'AGY_CLI_SANDBOX', 'AGY_CLI_DISABLE_AUTO_UPDATE'];
     const missing = required.filter((key) => !values[key]);
     return {
         name: 'proxy config',

@@ -361,6 +361,7 @@ setup_env() {
     launchctl setenv CONSOLIDATION_ENABLED      "true"                 || true
     launchctl setenv TOKEN_BUDGET               "2000"                 || true
     launchctl setenv AGENTMEMORY_LLM_TIMEOUT_MS "120000"               || true
+    launchctl setenv AGY_CLI_DISABLE_AUTO_UPDATE "1"                   || true
     ok "launchctl setenv populated for current GUI session"
 
     # Tear down the legacy persistence agent if a prior install left it behind.
@@ -990,8 +991,9 @@ setup_agentmemory_startup() {
       # it so launchd respawns it with the new env vars.
       if agentmemory_healthy; then
         info "Restarting agentmemory daemon to pick up new env vars..."
-        pkill -f "node.*agentmemory" 2>/dev/null || true
-        pkill -f "/.local/bin/iii" 2>/dev/null || true
+        launchctl kickstart -k "gui/$(id -u)/com.agentmemory" 2>/dev/null || \
+        launchctl kickstart -k "com.agentmemory" 2>/dev/null || \
+        { pkill -f "node.*agentmemory" 2>/dev/null || true; pkill -f "/.local/bin/iii" 2>/dev/null || true; }
         sleep 2
       fi
       ;;
@@ -1086,6 +1088,7 @@ register_proxy_launchagent() {
     <key>AGY_CLI_TIMEOUT_MS</key><string>${AGY_TIMEOUT_MS}</string>
     <key>AGY_CLI_SANDBOX</key><string>${AGY_SANDBOX}</string>
     <key>AGY_PROXY_CONCURRENCY</key><string>4</string>
+    <key>AGY_CLI_DISABLE_AUTO_UPDATE</key><string>1</string>
   </dict>
   <!-- Pin cwd to \$HOME (mirrors com.agentmemory). The iii-engine DB path in
        iii-config.yaml is RELATIVE (./data/state_store.db), so any agentmemory
@@ -1270,6 +1273,7 @@ start_proxy() {
       export AGY_CLI_TIMEOUT_MS="$AGY_TIMEOUT_MS"
       export AGY_CLI_SANDBOX="$AGY_SANDBOX"
       export AGY_PROXY_CONCURRENCY=4
+      export AGY_CLI_DISABLE_AUTO_UPDATE=1
       nohup node "${SCRIPT_DIR}/dist/cli.js" agy-proxy --host "$AGY_HOST" --port "$AGY_PORT" \
         >> "${PROXY_CONFIG_DIR}/agy-proxy.log" 2>&1 &
       disown || true
