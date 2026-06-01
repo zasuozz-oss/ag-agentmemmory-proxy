@@ -63,43 +63,23 @@ step "Install @agentmemory/agentmemory@${LATEST}"
 NPM_PREFIX="$(npm config get prefix 2>/dev/null || echo '')"
 PKG_DIR="${NPM_PREFIX}/lib/node_modules/@agentmemory"
 
-needs_sudo() {
-  # Writable parent isn't enough — a prior `sudo npm i` may have left the
-  # @agentmemory subtree owned by root. Probe the actual install path.
-  [[ -z "$NPM_PREFIX" ]] && return 0
-  [[ ! -w "$NPM_PREFIX" ]] && return 0
-  if [[ -e "$PKG_DIR" ]]; then
-    [[ ! -w "$PKG_DIR" ]] && return 0
-    find "$PKG_DIR" -maxdepth 3 ! -writable -print -quit 2>/dev/null | grep -q . && return 0
-  fi
-  return 1
-}
-
-run_npm_install() {
-  local prefix="$1"
-  ${prefix} npm install -g "@agentmemory/agentmemory@${LATEST}"
-}
-
-SUDO=""
-if needs_sudo; then
-  SUDO="sudo"
-  info "@agentmemory tree contains root-owned files — using sudo (you may be prompted for your password)"
+# This script NEVER runs sudo. Running npm with sudo leaves root-owned files in
+# the global prefix that break every later non-sudo run (and poison ~/.claude,
+# ~/.codex, etc.). If the prefix already has root-owned files from a past
+# `sudo npm i`, fail with a one-time reclaim command for YOU to run — we refuse
+# to deepen the mess by sudo-ing again.
+if [[ -n "$NPM_PREFIX" && -e "$PKG_DIR" ]] \
+   && find "$PKG_DIR" ! -user "$(id -un)" -print -quit 2>/dev/null | grep -q .; then
+  err "${PKG_DIR} has root-owned files from an earlier 'sudo npm install'.
+       Reclaim ownership ONCE, then re-run this script (no sudo needed after):
+           sudo chown -R $(id -un):$(id -gn) \"${PKG_DIR}\""
 fi
 
-if ! run_npm_install "$SUDO"; then
-  if [[ -z "$SUDO" ]]; then
-    warn "npm install failed without sudo — retrying with sudo"
-    SUDO="sudo"
-    run_npm_install "$SUDO" || err "npm install failed even with sudo"
-  else
-    err "npm install failed"
-  fi
-fi
-
-# Heal ownership so future updates don't need sudo.
-if [[ -n "$SUDO" && -d "$PKG_DIR" ]]; then
-  info "Fixing ownership of ${PKG_DIR} so next update doesn't need sudo"
-  sudo chown -R "$(id -un):$(id -gn)" "$PKG_DIR" || warn "chown failed (non-fatal)"
+if ! npm install -g "@agentmemory/agentmemory@${LATEST}"; then
+  err "npm install failed. If it was a permission (EACCES) error, your npm prefix
+       (${NPM_PREFIX}) is not user-writable. Either reclaim it ONCE:
+           sudo chown -R $(id -un):$(id -gn) \"${NPM_PREFIX}/lib/node_modules\" \"${NPM_PREFIX}/bin\"
+       or point npm at a user-owned prefix:  npm config set prefix ~/.npm-global"
 fi
 
 ok "Installed @agentmemory/agentmemory@${LATEST}"
