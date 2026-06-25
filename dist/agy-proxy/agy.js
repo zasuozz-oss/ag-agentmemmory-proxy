@@ -151,10 +151,19 @@ async function runAgyPromptNow(prompt, options) {
     args.push(prompt);
     return new Promise((resolve, reject) => {
         const cwd = process.env.AGY_PROXY_WORKDIR || (process.platform === 'win32' ? os.tmpdir() : '/private/tmp');
+        // ponytail: agy -p emits NOTHING on Windows unless it has its OWN console.
+        // Stdin/stdout being ttys is irrelevant (redirecting either still works in a
+        // real terminal); what agy needs is an attached console. A background hook has
+        // none, and a plain spawn (even windowsHide:false or via cmd /c) reuses/omits
+        // the parent's, yielding empty exit-0 output. detached:true allocates a fresh
+        // console for the child; windowsHide keeps it invisible. macOS/linux ignore
+        // detached's console semantics (it just makes a new process group) — harmless.
         const child = spawn(agyBin, args, {
             stdio: ['ignore', 'pipe', 'pipe'],
             cwd,
             env: shimmedEnv(),
+            detached: process.platform === 'win32',
+            windowsHide: true,
         });
         let stdout = '';
         let stderr = '';
