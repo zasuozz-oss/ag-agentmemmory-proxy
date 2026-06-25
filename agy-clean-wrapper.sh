@@ -51,6 +51,16 @@ if [[ ! -x "$AGY_REAL_BIN" ]] && command -v agy >/dev/null 2>&1; then
   AGY_REAL_BIN="$(command -v agy)"
 fi
 
+# agy được cài TAY (xem install-agy.sh / README). Nếu chưa có thì báo rõ thay vì
+# lỗi khó hiểu — và tự auto-update lên latest nên không pin version.
+if [[ ! -x "$AGY_REAL_BIN" ]]; then
+  echo "agy-clean-wrapper: không tìm thấy 'agy'. Cài tay rồi đăng nhập:" >&2
+  echo "  bash install-agy.sh   # hoặc cài Antigravity CLI chính thức" >&2
+  echo "  agy -i \"hello\"        # đăng nhập OAuth lần đầu" >&2
+  EXIT_CODE=127
+  exit $EXIT_CODE   # trap cleanup chạy trên EXIT
+fi
+
 # Chạy agy trong background để giữ PID (phục vụ kill khi cần)
 "$AGY_REAL_BIN" "$@" &
 AGY_PID=$!
