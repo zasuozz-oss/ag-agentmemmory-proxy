@@ -8,9 +8,10 @@
 #   1.0.0 logs in correctly. Google's CLI self-updates in the background, so a
 #   plain install gets silently bumped back to 1.0.3. This script:
 #     1. Installs agy 1.0.0 straight onto the machine (Windows / macOS / Linux).
-#     2. Locks the self-updater so it can't overwrite the pinned binary.
-#     3. Vendors the installer into a local folder so re-installs keep working
+#     2. Vendors the installer into a local folder so re-installs keep working
 #        even if Google deletes the build from its public bucket.
+#   It no longer locks the self-updater (chflags/ACL/shell-rc) — agy is free to
+#   auto-update; install_binary() still clears any lock left by older installs.
 #
 # Usage:
 #   bash install-agy.sh [options]
@@ -18,7 +19,6 @@
 #     --from-vendor      Offline only: install from the vendor cache, never hit
 #                        the network (fails if the cache is empty/invalid).
 #     --refresh-vendor   Force a fresh download into the vendor cache.
-#     --no-lock          Install only; skip the auto-update lock.
 #     --dir <path>       Override the install directory (default per-OS).
 #     --vendor-dir <p>   Override the vendor cache directory.
 #     -h, --help         Show this help.
@@ -58,7 +58,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FORCE=false
 FROM_VENDOR=false
 REFRESH_VENDOR=false
-DO_LOCK=true
 INSTALL_DIR_OVERRIDE=""
 VENDOR_DIR_OVERRIDE=""
 
@@ -67,7 +66,6 @@ while [ $# -gt 0 ]; do
     --force) FORCE=true ;;
     --from-vendor) FROM_VENDOR=true ;;
     --refresh-vendor) REFRESH_VENDOR=true ;;
-    --no-lock) DO_LOCK=false ;;
     --dir) INSTALL_DIR_OVERRIDE="${2:-}"; shift ;;
     --vendor-dir) VENDOR_DIR_OVERRIDE="${2:-}"; shift ;;
     -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
@@ -259,57 +257,6 @@ installed_version() {
   fi
 }
 
-# ---------------------------------------------------------------------------
-# Lock the self-updater so it can't replace the pinned binary.
-#   Windows: persistent user env var + ACL lock on the bin dir.
-#   Unix:    shell-rc export + read-only mode bits (kept executable).
-#
-# Why an ACL lock (not `attrib +R`): agy's self-updater does not open the
-# binary for writing — it RENAMES agy.exe → agy.exe.<id>.old and drops a fresh
-# agy.exe. A read-only file attribute blocks write-open but not rename/create,
-# so it was bypassed every time. Stripping inheritance and granting the user
-# only (RX) removes write/create/delete on the directory itself, which is what
-# actually stops the rename. install_binary() runs `icacls /reset` first to
-# unlock before reinstalling.
-# ---------------------------------------------------------------------------
-lock_updater() {
-  if [ "$OSKIND" = "windows" ]; then
-    cmd.exe //c "setx AGY_CLI_DISABLE_AUTO_UPDATE 1" >/dev/null 2>&1 \
-      && ok "Set user env var AGY_CLI_DISABLE_AUTO_UPDATE=1" \
-      || warn "Could not set persistent env var (setx)"
-    local wuser
-    wuser="$(cmd.exe //c "echo %USERDOMAIN%\\%USERNAME%" 2>/dev/null | tr -d '\r\n')"
-    MSYS_NO_PATHCONV=1 icacls.exe "$(cygpath -w "$INSTALL_DIR")" \
-      /inheritance:r /grant "${wuser}:(OI)(CI)(RX)" >/dev/null 2>&1 \
-      && ok "Locked $INSTALL_DIR read-only via ACL (rename-proof — blocks self-updater)" \
-      || warn "Could not apply ACL lock (icacls)"
-  else
-    local marker="export AGY_CLI_DISABLE_AUTO_UPDATE=1"
-    local rc
-    for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.profile"; do
-      [ -f "$rc" ] || continue
-      if ! grep -qF "$marker" "$rc" 2>/dev/null; then
-        printf '\n# Pin agy: block CLI self-update (install-agy.sh)\n%s\n' "$marker" >> "$rc"
-        ok "Added AGY_CLI_DISABLE_AUTO_UPDATE=1 to ${rc##*/}"
-      fi
-    done
-    # 0555 = r-x for all, no write → updater cannot write in place, still executable.
-    chmod 0555 "$INSTALL_PATH" 2>/dev/null \
-      && ok "Marked agy read-only (chmod 0555)" \
-      || warn "Could not chmod the binary read-only"
-    # chmod alone is NOT enough: ~/.local/bin is user-writable, and agy's
-    # self-updater replaces the binary by rename (unlink old + drop new), which a
-    # read-only file mode does not block. The macOS user-immutable flag (uchg)
-    # blocks unlink/rename/write of the file itself, so the updater's swap fails
-    # and the pinned 1.0.0 survives. (Mirrors the Windows ACL lock above.)
-    if chflags uchg "$INSTALL_PATH" 2>/dev/null; then
-      ok "Locked agy immutable (chflags uchg — rename-proof, blocks self-updater)"
-    else
-      warn "Could not set immutable flag (chflags uchg); self-updater may overwrite agy"
-    fi
-  fi
-}
-
 # ===========================================================================
 main() {
   printf '\n\033[1mPin agy %s (build %s)\033[0m\n' "$VERSION" "$BUILD_ID"
@@ -333,12 +280,6 @@ main() {
     ok "Verified: agy reports $cur"
   else
     warn "Version check returned '${cur:-<none>}' (expected $VERSION) — continuing"
-  fi
-
-  if [ "$DO_LOCK" = true ]; then
-    lock_updater
-  else
-    warn "Skipped auto-update lock (--no-lock)"
   fi
 
   printf '\n\033[1mDone.\033[0m One manual step remains — log in once (interactive, needs a browser):\n'

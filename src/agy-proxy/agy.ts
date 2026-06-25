@@ -57,10 +57,6 @@ async function runAgyPromptNow(prompt: string, options: AgyRunOptions): Promise<
     const child = spawn(agyBin, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       cwd,
-      env: {
-        ...process.env,
-        AGY_CLI_DISABLE_AUTO_UPDATE: '1',
-      },
     });
     let stdout = '';
     let stderr = '';

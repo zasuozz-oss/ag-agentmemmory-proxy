@@ -12,7 +12,6 @@ export function buildProxyConfig(input = {}, projectRoot = process.cwd()) {
         agyBin: input.agyBin || path.join(projectRoot, 'agy-clean-wrapper.sh'),
         timeoutMs: String(input.timeoutMs || '120000'),
         sandbox,
-        disableAutoUpdate: '1',
     };
 }
 export function renderProxyEnv(config) {
@@ -23,7 +22,6 @@ export function renderProxyEnv(config) {
         `AGY_CLI_BIN=${config.agyBin}`,
         `AGY_CLI_TIMEOUT_MS=${config.timeoutMs}`,
         `AGY_CLI_SANDBOX=${config.sandbox}`,
-        `AGY_CLI_DISABLE_AUTO_UPDATE=${config.disableAutoUpdate}`,
         '',
     ].join('\n');
 }

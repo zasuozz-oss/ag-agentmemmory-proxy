@@ -361,7 +361,6 @@ setup_env() {
     launchctl setenv CONSOLIDATION_ENABLED      "true"                 || true
     launchctl setenv TOKEN_BUDGET               "2000"                 || true
     launchctl setenv AGENTMEMORY_LLM_TIMEOUT_MS "120000"               || true
-    launchctl setenv AGY_CLI_DISABLE_AUTO_UPDATE "1"                   || true
     ok "launchctl setenv populated for current GUI session"
 
     # Tear down the legacy persistence agent if a prior install left it behind.
@@ -1035,7 +1034,6 @@ AGY_CLI_BIN=${agy_cli_bin}
 AGY_CLI_TIMEOUT_MS=${AGY_TIMEOUT_MS}
 AGY_CLI_SANDBOX=${AGY_SANDBOX}
 AGY_PROXY_CONCURRENCY=4
-AGY_CLI_DISABLE_AUTO_UPDATE=1
 EOF
   ok "Updated $PROXY_ENV_FILE"
 }
@@ -1088,7 +1086,6 @@ register_proxy_launchagent() {
     <key>AGY_CLI_TIMEOUT_MS</key><string>${AGY_TIMEOUT_MS}</string>
     <key>AGY_CLI_SANDBOX</key><string>${AGY_SANDBOX}</string>
     <key>AGY_PROXY_CONCURRENCY</key><string>4</string>
-    <key>AGY_CLI_DISABLE_AUTO_UPDATE</key><string>1</string>
   </dict>
   <!-- Pin cwd to \$HOME (mirrors com.agentmemory). The iii-engine DB path in
        iii-config.yaml is RELATIVE (./data/state_store.db), so any agentmemory
@@ -1131,9 +1128,6 @@ register_proxy_task_scheduler() {
 
   cat > "$bat" <<BAT
 @echo off
-REM Pin agy: block its self-updater so a background bump (e.g. 1.0.0 -> 1.0.3)
-REM cannot silently break print-mode login out from under the proxy.
-set AGY_CLI_DISABLE_AUTO_UPDATE=1
 set AGY_CLI_BIN=${win_agy}
 set AGY_CLI_TIMEOUT_MS=${AGY_TIMEOUT_MS}
 set AGY_CLI_SANDBOX=${AGY_SANDBOX}
@@ -1148,8 +1142,7 @@ BAT
     warn "Task Scheduler ONLOGON needs elevation; using Startup folder + detached spawn."
     install_startup_folder_launcher "AgyProxy" "$win_bat"
     export AGY_CLI_BIN="$AGY_BIN_WIN" AGY_CLI_TIMEOUT_MS="$AGY_TIMEOUT_MS" \
-           AGY_CLI_SANDBOX="$AGY_SANDBOX" AGY_PROXY_CONCURRENCY=4 \
-           AGY_CLI_DISABLE_AUTO_UPDATE=1
+           AGY_CLI_SANDBOX="$AGY_SANDBOX" AGY_PROXY_CONCURRENCY=4
     nohup node "${SCRIPT_DIR}/dist/cli.js" agy-proxy --host "$AGY_HOST" --port "$AGY_PORT" \
       >> "$log_file" 2>&1 &
     disown || true
@@ -1273,7 +1266,6 @@ start_proxy() {
       export AGY_CLI_TIMEOUT_MS="$AGY_TIMEOUT_MS"
       export AGY_CLI_SANDBOX="$AGY_SANDBOX"
       export AGY_PROXY_CONCURRENCY=4
-      export AGY_CLI_DISABLE_AUTO_UPDATE=1
       nohup node "${SCRIPT_DIR}/dist/cli.js" agy-proxy --host "$AGY_HOST" --port "$AGY_PORT" \
         >> "${PROXY_CONFIG_DIR}/agy-proxy.log" 2>&1 &
       disown || true

@@ -16,7 +16,6 @@ export type ProxyConfig = {
   agyBin: string;
   timeoutMs: string;
   sandbox: 'true' | 'false';
-  disableAutoUpdate: '1';
 };
 
 export function defaultProxyConfigPath(home = os.homedir()): string {
@@ -31,7 +30,6 @@ export function buildProxyConfig(input: ProxyConfigInput = {}, projectRoot = pro
     agyBin: input.agyBin || path.join(projectRoot, 'agy-clean-wrapper.sh'),
     timeoutMs: String(input.timeoutMs || '120000'),
     sandbox,
-    disableAutoUpdate: '1',
   };
 }
 
@@ -43,7 +41,6 @@ export function renderProxyEnv(config: ProxyConfig): string {
     `AGY_CLI_BIN=${config.agyBin}`,
     `AGY_CLI_TIMEOUT_MS=${config.timeoutMs}`,
     `AGY_CLI_SANDBOX=${config.sandbox}`,
-    `AGY_CLI_DISABLE_AUTO_UPDATE=${config.disableAutoUpdate}`,
     '',
   ].join('\n');
 }

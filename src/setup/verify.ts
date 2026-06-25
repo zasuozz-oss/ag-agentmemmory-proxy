@@ -29,7 +29,7 @@ function checkNode(): VerificationCheck {
 async function checkProxyConfig(): Promise<VerificationCheck> {
   const configPath = defaultProxyConfigPath();
   const values = await readProxyEnv(configPath);
-  const required = ['AGY_PROXY_HOST', 'AGY_PROXY_PORT', 'AGY_CLI_BIN', 'AGY_CLI_TIMEOUT_MS', 'AGY_CLI_SANDBOX', 'AGY_CLI_DISABLE_AUTO_UPDATE'];
+  const required = ['AGY_PROXY_HOST', 'AGY_PROXY_PORT', 'AGY_CLI_BIN', 'AGY_CLI_TIMEOUT_MS', 'AGY_CLI_SANDBOX'];
   const missing = required.filter((key) => !values[key]);
 
   return {

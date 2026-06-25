@@ -25,7 +25,6 @@ test('renderProxyEnv writes only ag-agentmemmory-proxy keys', async () => {
   assert.match(rendered, /AGY_PROXY_HOST=127\.0\.0\.1/);
   assert.match(rendered, /AGY_PROXY_PORT=3999/);
   assert.match(rendered, /AGY_CLI_BIN=\/tmp\/agy-wrapper/);
-  assert.match(rendered, /AGY_CLI_DISABLE_AUTO_UPDATE=1/);
   assert.doesNotMatch(rendered, /AGENTMEMORY_/);
   assert.doesNotMatch(rendered, /OPENAI_BASE_URL/);
 });
